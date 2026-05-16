@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-
 export async function GET(request: NextRequest) {
   const feed = request.nextUrl.searchParams.get('feed');
 
@@ -19,15 +18,20 @@ export async function GET(request: NextRequest) {
   console.log(`[ics] feed=${feed} url_set=${!!url} url_len=${url?.length ?? 0}`);
 
   if (!url?.trim()) {
-    // Feed not yet configured — return empty
     return new NextResponse(null, { status: 204 });
   }
 
   try {
     const upstream = await fetch(url, {
-      headers: { 'User-Agent': 'FamilyCalendar/2.0' },
-      next: { revalidate: 300 }, // cache 5 min at the edge
+      headers: {
+        // Use a real browser UA — Office 365 blocks non-browser agents
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/calendar, text/html, */*',
+      },
+      next: { revalidate: 300 },
     });
+
+    console.log(`[ics] feed=${feed} upstream_status=${upstream.status}`);
 
     if (!upstream.ok) {
       return new NextResponse(`Upstream error ${upstream.status}`, { status: 502 });
@@ -40,6 +44,7 @@ export async function GET(request: NextRequest) {
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    console.log(`[ics] feed=${feed} fetch_error=${msg}`);
     return new NextResponse(`Fetch failed: ${msg}`, { status: 502 });
   }
 }
