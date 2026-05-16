@@ -87,7 +87,11 @@ function parseICS(text: string, feedName: FeedName): CalEvent[] {
       // Filter custody feeds to overnight indicators only
       if (isCustodyFeed) {
         const pattern = CUSTODY_PATTERNS[feedName]!;
-        if (!pattern.test(title)) continue;
+        if (!pattern.test(title)) {
+          console.log(`[feeds] ${feedName} SKIP: "${title}"`);
+          continue;
+        }
+        console.log(`[feeds] ${feedName} MATCH: "${title}"`);
       }
 
       let isAllDay = detectAllDay(event, vevent);
