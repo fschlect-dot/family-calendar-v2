@@ -52,6 +52,17 @@ const CUSTODY_BG: Record<string, string> = {
   charissa_custody: 'bg-green-50 dark:bg-green-950/40',
 };
 
+// ── Feed config for legend ─────────────────────────────────────────────────
+
+type FeedName = 'fred_custody' | 'charissa_custody' | 'fred_outlook' | 'idea';
+
+const FEEDS: { name: FeedName; label: string; color: string }[] = [
+  { name: 'fred_custody',     label: "Fred's Custody",    color: 'bg-blue-500' },
+  { name: 'charissa_custody', label: "Charissa's Custody", color: 'bg-green-500' },
+  { name: 'fred_outlook',     label: "Fred's Calendar",   color: 'bg-gray-700' },
+  { name: 'idea',             label: '💡 Ideas',           color: 'bg-yellow-400' },
+];
+
 // ── Person × Day matrix config ─────────────────────────────────────────────
 
 const PERSONS = [
@@ -61,7 +72,6 @@ const PERSONS = [
   { key: 'everett',  label: 'Everett'  },
   { key: 'fred',     label: 'Fred'     },
   { key: 'charissa', label: 'Charissa' },
-  { key: 'all',      label: 'All'      },
   { key: 'ideas',    label: '💡 Ideas' },
 ] as const;
 
@@ -74,7 +84,6 @@ const ROW_HEADER_CLS: Record<PersonKey, string> = {
   everett:  'bg-rose-100   text-rose-900   border-rose-200   dark:bg-rose-900/40   dark:text-rose-200   dark:border-rose-800',
   fred:     'bg-yellow-100 text-yellow-900 border-yellow-200 dark:bg-yellow-900/40 dark:text-yellow-200 dark:border-yellow-800',
   charissa: 'bg-cyan-100   text-cyan-900   border-cyan-200   dark:bg-cyan-900/40   dark:text-cyan-200   dark:border-cyan-800',
-  all:      'bg-purple-100 text-purple-900 border-purple-200 dark:bg-purple-900/40 dark:text-purple-200 dark:border-purple-800',
   ideas:    'bg-gray-100   text-gray-700   border-gray-200   dark:bg-gray-800      dark:text-gray-300   dark:border-gray-700',
 };
 
@@ -85,20 +94,23 @@ const CELL_BG_CLS: Record<PersonKey, string> = {
   everett:  'bg-rose-50   dark:bg-rose-950/20',
   fred:     'bg-yellow-50 dark:bg-yellow-950/20',
   charissa: 'bg-cyan-50   dark:bg-cyan-950/20',
-  all:      'bg-purple-50 dark:bg-purple-950/20',
   ideas:    'bg-gray-50   dark:bg-gray-900',
 };
 
 /** Return events that belong in a given person's row for a given day. */
-function eventsForPersonDay(personKey: PersonKey, day: Date, allEvents: CalEvent[]): CalEvent[] {
-  const dayEvts = eventsForDay(day, allEvents);
-  if (personKey === 'henry' || personKey === 'george' || personKey === 'mabel' || personKey === 'everett') {
-    // Kids rows: show which parent has custody each day
-    return dayEvts.filter(e => e.allDay && (e.feed === 'fred_custody' || e.feed === 'charissa_custody'));
+function eventsForPersonDay(personKey: PersonKey, day: Date, allEvents: CalEvent[], enabledFeeds: Set<FeedName>): CalEvent[] {
+  const dayEvts = eventsForDay(day, allEvents).filter(e => enabledFeeds.has(e.feed as FeedName));
+  
+  if (personKey === 'henry' || personKey === 'george') {
+    // Henry & George: only show FWS (Fred's custody)
+    return dayEvts.filter(e => e.allDay && e.feed === 'fred_custody');
+  }
+  if (personKey === 'mabel' || personKey === 'everett') {
+    // Mabel & Everett: only show Charissa custody
+    return dayEvts.filter(e => e.allDay && e.feed === 'charissa_custody');
   }
   if (personKey === 'fred')     return dayEvts.filter(e => e.feed === 'fred_outlook' || e.feed === 'fred_custody');
   if (personKey === 'charissa') return dayEvts.filter(e => e.feed === 'charissa_custody');
-  if (personKey === 'all')      return dayEvts.filter(e => e.feed !== 'idea');
   if (personKey === 'ideas')    return dayEvts.filter(e => e.feed === 'idea');
   return [];
 }
@@ -106,20 +118,28 @@ function eventsForPersonDay(personKey: PersonKey, day: Date, allEvents: CalEvent
 // ── Main component ─────────────────────────────────────────────────────────
 
 export default function Calendar() {
-  // Default view: weekly table (per user preference)
-  const [view,      setView]      = useState<ViewMode>('week');
-  const [current,   setCurrent]   = useState(new Date());
-  const [icsEvents, setIcsEvents] = useState<CalEvent[]>([]);
-  const [ideas,     setIdeas]     = useState<Idea[]>([]);
-  const [loading,   setLoading]   = useState(true);
-  const [dayModal,  setDayModal]  = useState<Date | null>(null);
-  const [ideaModal, setIdeaModal] = useState<{ date?: string; id?: string } | null>(null);
+  const [view,         setView]         = useState<ViewMode>('week');
+  const [current,      setCurrent]      = useState(new Date());
+  const [icsEvents,    setIcsEvents]    = useState<CalEvent[]>([]);
+  const [ideas,        setIdeas]        = useState<Idea[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [dayModal,     setDayModal]     = useState<Date | null>(null);
+  const [ideaModal,    setIdeaModal]    = useState<{ date?: string; id?: string } | null>(null);
+  const [enabledFeeds, setEnabledFeeds] = useState<Set<FeedName>>(
+    new Set(['fred_custody', 'charissa_custody', 'fred_outlook', 'idea'])
+  );
 
   const today     = todayMidnight();
   const allEvents = [...icsEvents, ...ideas.map(ideaToEvent)];
 
-  // Load feeds + ideas on mount — use allSettled so a Supabase failure
-  // doesn't block ICS events from rendering
+  const toggleFeed = (feed: FeedName) => {
+    const newEnabled = new Set(enabledFeeds);
+    if (newEnabled.has(feed)) newEnabled.delete(feed);
+    else newEnabled.add(feed);
+    setEnabledFeeds(newEnabled);
+  };
+
+  // Load feeds + ideas on mount
   useEffect(() => {
     setLoading(true);
     Promise.allSettled([loadAllFeeds(), fetchIdeas()])
@@ -219,34 +239,27 @@ export default function Calendar() {
         </div>
       </header>
 
-      {/* ── Calendar body ── */}
-      <main className="max-w-screen-xl mx-auto px-4 py-4">
+      {/* ── Calendar body (3-week scrollable) ── */}
+      <main className="px-4 py-4">
         {view === 'week'
-          ? <WeekTable current={current} today={today} allEvents={allEvents} onDayDetail={setDayModal} onAddIdea={d=>setIdeaModal({date:d})} />
-          : <MonthGrid current={current} today={today} allEvents={allEvents} onDayDetail={setDayModal} onAddIdea={d=>setIdeaModal({date:d})} />
+          ? <MultiWeekTable current={current} today={today} allEvents={allEvents} enabledFeeds={enabledFeeds} onDayDetail={setDayModal} onAddIdea={d=>setIdeaModal({date:d})} />
+          : <MonthGrid current={current} today={today} allEvents={allEvents} enabledFeeds={enabledFeeds} onDayDetail={setDayModal} onAddIdea={d=>setIdeaModal({date:d})} />
         }
       </main>
 
-      {/* ── Legend ── */}
-      <div className="max-w-screen-xl mx-auto px-4 pb-8 flex flex-wrap gap-3 items-center">
-        <span className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide mr-1">Legend</span>
-        {[
-          { label: 'Henry',              cls: 'bg-blue-400'   },
-          { label: 'George',             cls: 'bg-green-400'  },
-          { label: 'Mabel',              cls: 'bg-pink-400'   },
-          { label: 'Everett',            cls: 'bg-rose-400'   },
-          { label: 'Fred',               cls: 'bg-yellow-400' },
-          { label: 'Charissa',           cls: 'bg-cyan-400'   },
-          { label: 'All',                cls: 'bg-purple-400' },
-          { label: "Fred's Custody",     cls: 'bg-blue-600'   },
-          { label: "Charissa's Custody", cls: 'bg-green-600'  },
-          { label: "Fred's Outlook",     cls: 'bg-slate-700 dark:bg-slate-600' },
-          { label: '💡 Ideas',           cls: 'bg-amber-400 border border-dashed border-amber-600' },
-        ].map(({label,cls}) => (
-          <span key={label} className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-400">
-            <span className={`w-3 h-3 rounded-sm flex-shrink-0 ${cls}`} />
+      {/* ── Feed filter legend (clickable) ── */}
+      <div className="max-w-screen-xl mx-auto px-4 pb-8 flex flex-wrap gap-2 items-center">
+        <span className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide mr-2">Filters</span>
+        {FEEDS.map(({name, label, color}) => (
+          <button key={name} onClick={() => toggleFeed(name)}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all border ${
+              enabledFeeds.has(name)
+                ? 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100'
+                : 'bg-gray-50 dark:bg-gray-900 border-gray-100 dark:border-gray-800 text-gray-400 dark:text-gray-500 opacity-50'
+            }`}>
+            <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${color}`} />
             {label}
-          </span>
+          </button>
         ))}
       </div>
 
@@ -272,103 +285,120 @@ export default function Calendar() {
   );
 }
 
-// ── Weekly Table — person × day matrix ────────────────────────────────────
+// ── Grid Props ────────────────────────────────────────────────────────────
 
 interface GridProps {
-  current:     Date;
-  today:       Date;
-  allEvents:   CalEvent[];
-  onDayDetail: (d: Date) => void;
-  onAddIdea:   (dateStr: string) => void;
+  current:      Date;
+  today:        Date;
+  allEvents:    CalEvent[];
+  enabledFeeds: Set<FeedName>;
+  onDayDetail:  (d: Date) => void;
+  onAddIdea:    (dateStr: string) => void;
 }
 
-function WeekTable({ current, today, allEvents, onDayDetail, onAddIdea }: GridProps) {
-  const ws   = weekStart(current);
-  const days = Array.from({length:7}, (_,i) => addDays(ws, i));
+// ── 3-Week Scrollable Table ────────────────────────────────────────────────
+
+function MultiWeekTable({ current, today, allEvents, enabledFeeds, onDayDetail, onAddIdea }: GridProps) {
+  // Show previous week + current week + next week (3 weeks total)
+  const startWeek = addDays(weekStart(current), -7);
+  const weeks = Array.from({length:3}, (_,i) => addDays(startWeek, i*7));
 
   return (
-    <div className="rounded-xl border border-gray-200 dark:border-gray-700 overflow-x-auto shadow-sm bg-white dark:bg-gray-900">
-      <table className="min-w-[760px] w-full border-collapse text-sm">
+    <div className="space-y-4">
+      {weeks.map(ws => {
+        const days = Array.from({length:7}, (_,i) => addDays(ws, i));
+        const weekLabel = (() => {
+          const we = addDays(ws, 6);
+          return `${ws.toLocaleDateString('en-US',{month:'short',day:'numeric'})} – ${we.toLocaleDateString('en-US',{month:'short',day:'numeric'})}`;
+        })();
 
-        {/* ── Column headers ── */}
-        <thead>
-          <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
-            <th className="w-24 py-2 px-3 text-left text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 border-r border-gray-200 dark:border-gray-700">
-              Person
-            </th>
-            {days.map(day => {
-              const isToday = sameDay(day, today);
-              return (
-                <th key={isoDate(day)}
-                  className={`py-2 px-2 text-center border-r border-gray-100 dark:border-gray-700 last:border-r-0 font-normal ${isToday ? 'bg-red-50 dark:bg-red-950/30' : ''}`}>
-                  <div className="flex flex-col items-center gap-0.5">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
-                      {day.toLocaleDateString('en-US', {weekday:'short'})}
-                    </span>
-                    <button
-                      onClick={() => onDayDetail(day)}
-                      className={`w-7 h-7 flex items-center justify-center rounded-full text-xs font-medium transition-colors ${
-                        isToday
-                          ? 'bg-red-500 text-white'
-                          : 'text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
-                      }`}>
-                      {day.getDate()}
-                    </button>
-                  </div>
-                </th>
-              );
-            })}
-          </tr>
-        </thead>
+        return (
+          <div key={isoDate(ws)} className="rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm bg-white dark:bg-gray-900">
+            {/* Week label */}
+            <div className="px-4 py-2 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+              <h3 className="text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wide">{weekLabel}</h3>
+            </div>
 
-        {/* ── Person rows ── */}
-        <tbody>
-          {PERSONS.map(({ key, label }) => (
-            <tr key={key} className="border-b border-gray-100 dark:border-gray-800 last:border-b-0">
+            {/* Week table */}
+            <table className="w-full border-collapse text-sm">
+              {/* Column headers */}
+              <thead>
+                <tr className="border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800">
+                  <th className="w-20 py-2 px-2 text-left text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 border-r border-gray-200 dark:border-gray-700">
+                    Person
+                  </th>
+                  {days.map(day => {
+                    const isToday = sameDay(day, today);
+                    return (
+                      <th key={isoDate(day)}
+                        className={`py-2 px-1 text-center border-r border-gray-100 dark:border-gray-700 last:border-r-0 font-normal flex-1 ${isToday ? 'bg-red-50 dark:bg-red-950/30' : ''}`}>
+                        <div className="flex flex-col items-center gap-0.5">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                            {day.toLocaleDateString('en-US', {weekday:'short'})}
+                          </span>
+                          <button
+                            onClick={() => onDayDetail(day)}
+                            className={`w-6 h-6 flex items-center justify-center rounded-full text-xs font-medium transition-colors ${
+                              isToday
+                                ? 'bg-red-500 text-white'
+                                : 'text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                            }`}>
+                            {day.getDate()}
+                          </button>
+                        </div>
+                      </th>
+                    );
+                  })}
+                </tr>
+              </thead>
 
-              {/* Row label */}
-              <td className={`py-2 px-3 font-semibold text-[11px] uppercase tracking-wide border-r ${ROW_HEADER_CLS[key]} whitespace-nowrap`}>
-                {label}
-              </td>
+              {/* Person rows */}
+              <tbody>
+                {PERSONS.map(({ key, label }) => (
+                  <tr key={key} className="border-b border-gray-100 dark:border-gray-800 last:border-b-0">
+                    <td className={`py-2 px-2 font-semibold text-[10px] uppercase tracking-wide border-r ${ROW_HEADER_CLS[key]} whitespace-nowrap`}>
+                      {label}
+                    </td>
+                    {days.map(day => {
+                      const dateStr    = isoDate(day);
+                      const isToday    = sameDay(day, today);
+                      const personEvts = eventsForPersonDay(key, day, allEvents, enabledFeeds);
 
-              {/* Day cells */}
-              {days.map(day => {
-                const dateStr    = isoDate(day);
-                const isToday    = sameDay(day, today);
-                const personEvts = eventsForPersonDay(key, day, allEvents);
-
-                return (
-                  <td key={dateStr}
-                    className={`align-top p-1 min-w-[90px] border-r border-gray-100 dark:border-gray-800 last:border-r-0 ${CELL_BG_CLS[key]} ${
-                      isToday ? 'ring-2 ring-inset ring-red-300 dark:ring-red-700' : ''
-                    }`}>
-                    <div className="space-y-0.5 min-h-[36px]">
-                      {personEvts.map(e => (
-                        <EventChip key={e.id} event={e} onClick={() => onDayDetail(day)} />
-                      ))}
-                      {key === 'ideas' && (
-                        <button
-                          onClick={() => onAddIdea(dateStr)}
-                          className="text-[10px] text-gray-400 dark:text-gray-600 hover:text-amber-600 dark:hover:text-amber-400 transition-colors px-1"
-                          title="Add idea">
-                          + add
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+                      return (
+                        <td key={dateStr}
+                          className={`align-top p-0.5 border-r border-gray-100 dark:border-gray-800 last:border-r-0 ${CELL_BG_CLS[key]} ${
+                            isToday ? 'ring-2 ring-inset ring-red-300 dark:ring-red-700' : ''
+                          }`}>
+                          <div className="space-y-0.5 min-h-[32px]">
+                            {personEvts.map(e => (
+                              <EventChip key={e.id} event={e} onClick={() => onDayDetail(day)} />
+                            ))}
+                            {key === 'ideas' && (
+                              <button
+                                onClick={() => onAddIdea(dateStr)}
+                                className="text-[10px] text-gray-400 dark:text-gray-600 hover:text-amber-600 dark:hover:text-amber-400 transition-colors px-1"
+                                title="Add idea">
+                                + add
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      })}
     </div>
   );
 }
 
 // ── Month Grid (secondary view) ────────────────────────────────────────────
 
-function MonthGrid({ current, today, allEvents, onDayDetail, onAddIdea }: GridProps) {
+function MonthGrid({ current, today, allEvents, enabledFeeds, onDayDetail, onAddIdea }: GridProps) {
   const year  = current.getFullYear();
   const month = current.getMonth();
 
@@ -396,7 +426,7 @@ function MonthGrid({ current, today, allEvents, onDayDetail, onAddIdea }: GridPr
       {/* Day cells */}
       <div className="grid grid-cols-7 border-t border-gray-200 dark:border-gray-700 bg-gray-200 dark:bg-gray-700 gap-px">
         {days.map(day => {
-          const dayEvts  = eventsForDay(day, allEvents);
+          const dayEvts  = eventsForDay(day, allEvents).filter(e => enabledFeeds.has(e.feed as FeedName));
           const custody  = custodyFeedForDay(dayEvts);
           const nonCust  = dayEvts.filter(e => !isCustodyBg(e));
           const isToday  = sameDay(day, today);
