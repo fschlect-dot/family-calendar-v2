@@ -122,22 +122,24 @@ export default function Calendar() {
   useEffect(() => {
     setLoading(true);
     Promise.all([loadAllFeeds(), fetchIdeas()])
-      .then(([ics, ideaData]) => { setIcsEvents(ics); setIdeas(ideaData); })
+      .then(([ics, ideaData]) => {
+        // Debug: show what was loaded and what's near today
+        const t = new Date();
+        const s = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+        const e = new Date(s.getTime() + 86_400_000);
+        const todayIcs = ics.filter(ev => ev.start < e && ev.end > s);
+        console.log('[calendar] loaded ics:', ics.length, '| today matches:', todayIcs.length);
+        if (ics.length > 0) {
+          const sample = ics[0];
+          console.log('[calendar] sample event:', sample.feed, sample.title, 'start:', sample.start.toISOString(), 'allDay:', sample.allDay);
+        }
+        todayIcs.forEach(ev => console.log('[calendar] TODAY:', ev.feed, ev.title, ev.start.toISOString()));
+        setIcsEvents(ics);
+        setIdeas(ideaData);
+      })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
-
-  const refreshIdeas = useCallback(async () => setIdeas(await fetchIdeas()), []);
-
-  // Debug: log events for today once loaded
-  useEffect(() => {
-    if (loading) return;
-    const todayEvts = eventsForDay(today, allEvents);
-    console.log('[calendar] allEvents total:', allEvents.length,
-      '| fred_custody:', allEvents.filter(e => e.feed === 'fred_custody').length,
-      '| charissa_custody:', allEvents.filter(e => e.feed === 'charissa_custody').length);
-    console.log('[calendar] events for today:', todayEvts.length, todayEvts.map(e => `${e.feed}:${e.title} allDay=${e.allDay} start=${e.start.toISOString()}`));
-  }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Idea CRUD
   async function handleSaveIdea(title: string, date: string, note: string) {
