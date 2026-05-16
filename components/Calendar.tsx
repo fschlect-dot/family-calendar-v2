@@ -118,26 +118,19 @@ export default function Calendar() {
   const today     = todayMidnight();
   const allEvents = [...icsEvents, ...ideas.map(ideaToEvent)];
 
-  // Load feeds + ideas on mount
+  // Load feeds + ideas on mount — use allSettled so a Supabase failure
+  // doesn't block ICS events from rendering
   useEffect(() => {
     setLoading(true);
-    Promise.all([loadAllFeeds(), fetchIdeas()])
-      .then(([ics, ideaData]) => {
-        // Debug: show what was loaded and what's near today
-        const t = new Date();
-        const s = new Date(t.getFullYear(), t.getMonth(), t.getDate());
-        const e = new Date(s.getTime() + 86_400_000);
-        const todayIcs = ics.filter(ev => ev.start < e && ev.end > s);
-        console.log('[calendar] loaded ics:', ics.length, '| today matches:', todayIcs.length);
-        if (ics.length > 0) {
-          const sample = ics[0];
-          console.log('[calendar] sample event:', sample.feed, sample.title, 'start:', sample.start.toISOString(), 'allDay:', sample.allDay);
-        }
-        todayIcs.forEach(ev => console.log('[calendar] TODAY:', ev.feed, ev.title, ev.start.toISOString()));
+    Promise.allSettled([loadAllFeeds(), fetchIdeas()])
+      .then(([icsResult, ideasResult]) => {
+        const ics      = icsResult.status      === 'fulfilled' ? icsResult.value      : [];
+        const ideaData = ideasResult.status === 'fulfilled' ? ideasResult.value : [];
+        if (icsResult.status === 'rejected')   console.warn('[calendar] ICS load failed:', icsResult.reason);
+        if (ideasResult.status === 'rejected') console.warn('[calendar] Ideas load failed:', ideasResult.reason);
         setIcsEvents(ics);
         setIdeas(ideaData);
       })
-      .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
 
