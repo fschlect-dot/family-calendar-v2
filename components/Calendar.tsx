@@ -134,6 +134,8 @@ export default function Calendar() {
       .finally(() => setLoading(false));
   }, []);
 
+  const refreshIdeas = useCallback(async () => setIdeas(await fetchIdeas()), []);
+
   // Idea CRUD
   async function handleSaveIdea(title: string, date: string, note: string) {
     if (ideaModal?.id) await updateIdea(ideaModal.id, title, date, note);
