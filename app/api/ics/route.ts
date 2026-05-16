@@ -1,19 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const FEEDS: Record<string, string | undefined> = {
-  fred_custody:     process.env.FEED_FRED_CUSTODY,
-  fred_outlook:     process.env.FEED_FRED_OUTLOOK,
-  charissa_custody: process.env.FEED_CHARISSA_CUSTODY,
-};
 
 export async function GET(request: NextRequest) {
   const feed = request.nextUrl.searchParams.get('feed');
+
+  // Read env vars inside the handler so they're resolved at request time
+  const FEEDS: Record<string, string | undefined> = {
+    fred_custody:     process.env.FEED_FRED_CUSTODY,
+    fred_outlook:     process.env.FEED_FRED_OUTLOOK,
+    charissa_custody: process.env.FEED_CHARISSA_CUSTODY,
+  };
 
   if (!feed || !Object.prototype.hasOwnProperty.call(FEEDS, feed)) {
     return new NextResponse('Unknown feed', { status: 400 });
   }
 
   const url = FEEDS[feed];
+  console.log(`[ics] feed=${feed} url_set=${!!url} url_len=${url?.length ?? 0}`);
+
   if (!url?.trim()) {
     // Feed not yet configured — return empty
     return new NextResponse(null, { status: 204 });
