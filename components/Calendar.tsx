@@ -129,6 +129,16 @@ export default function Calendar() {
 
   const refreshIdeas = useCallback(async () => setIdeas(await fetchIdeas()), []);
 
+  // Debug: log events for today once loaded
+  useEffect(() => {
+    if (loading) return;
+    const todayEvts = eventsForDay(today, allEvents);
+    console.log('[calendar] allEvents total:', allEvents.length,
+      '| fred_custody:', allEvents.filter(e => e.feed === 'fred_custody').length,
+      '| charissa_custody:', allEvents.filter(e => e.feed === 'charissa_custody').length);
+    console.log('[calendar] events for today:', todayEvts.length, todayEvts.map(e => `${e.feed}:${e.title} allDay=${e.allDay} start=${e.start.toISOString()}`));
+  }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Idea CRUD
   async function handleSaveIdea(title: string, date: string, note: string) {
     if (ideaModal?.id) await updateIdea(ideaModal.id, title, date, note);
