@@ -1,86 +1,83 @@
 import { createClient } from '@supabase/supabase-js';
+import type { FamilyEvent } from './types';
 
 const supabaseUrl  = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseAnon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 export const supabase = createClient(supabaseUrl, supabaseAnon);
 
-// ── Ideas CRUD ─────────────────────────────────────────────────────────────
+// ── Events CRUD ─────────────────────────────────────────────────────────────
 
-export async function fetchIdeas() {
+export async function getEventsByDateRange(
+  rangeStart: string,
+  rangeEnd: string,
+): Promise<FamilyEvent[]> {
   const { data, error } = await supabase
-    .from('ideas')
+    .from('events')
     .select('*')
-    .order('date', { ascending: true });
+    .lte('start_date', rangeEnd)
+    .gte('end_date', rangeStart)
+    .order('start_date', { ascending: true });
   if (error) throw error;
   return data ?? [];
 }
 
-export async function createIdea(title: string, date: string, note?: string) {
+export async function getEventById(id: string): Promise<FamilyEvent | null> {
   const { data, error } = await supabase
-    .from('ideas')
-    .insert({ title, date, note: note || null })
-    .select()
+    .from('events')
+    .select('*')
+    .eq('id', id)
     .single();
   if (error) throw error;
   return data;
 }
 
-export async function updateIdea(id: string, title: string, date: string, note?: string) {
-  const { error } = await supabase
-    .from('ideas')
-    .update({ title, date, note: note || null })
-    .eq('id', id);
-  if (error) throw error;
+export async function saveEvent(
+  event: Omit<FamilyEvent, 'id' | 'created_at' | 'updated_at'> & { id?: string },
+): Promise<FamilyEvent> {
+  const payload = { ...event, updated_at: new Date().toISOString() };
+  if (payload.id) {
+    const { data, error } = await supabase
+      .from('events')
+      .update(payload)
+      .eq('id', payload.id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  } else {
+    const { id: _id, ...insert } = payload as typeof payload & { id?: string };
+    void _id;
+    const { data, error } = await supabase
+      .from('events')
+      .insert(insert)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
 }
 
-export async function deleteIdea(id: string) {
-  const { error } = await supabase
-    .from('ideas')
-    .delete()
-    .eq('id', id);
+export async function deleteEvent(id: string): Promise<void> {
+  const { error } = await supabase.from('events').delete().eq('id', id);
   if (error) throw error;
 }
 
 // ── Weekly Notes CRUD ──────────────────────────────────────────────────────
 
-// Event entries are stored with this prefix so they're distinguishable from
-// regular inline notes without requiring a separate DB column.
-export const EVENT_NOTE_PREFIX = '##EVENT##';
-
-export function isEventNoteText(t: string) { return t.startsWith(EVENT_NOTE_PREFIX); }
-export function stripEventPrefix(t: string) { return t.slice(EVENT_NOTE_PREFIX.length); }
-
-/**
- * Returns two maps keyed by "${person}|${date}":
- *   notes      — regular inline notes
- *   eventNotes — multi-day events created via the event form
- */
-export async function fetchAllNotes(): Promise<{
-  notes: Record<string, string>;
-  eventNotes: Record<string, string>;
-}> {
+export async function fetchAllNotes(): Promise<Record<string, string>> {
   const { data, error } = await supabase
     .from('weekly_notes')
     .select('date, person, note_text');
   if (error) throw error;
 
-  const notes: Record<string, string>      = {};
-  const eventNotes: Record<string, string> = {};
-
+  const notes: Record<string, string> = {};
   for (const row of data ?? []) {
-    const key = `${row.person}|${row.date}`;
-    if (isEventNoteText(row.note_text)) {
-      eventNotes[key] = stripEventPrefix(row.note_text);
-    } else {
-      notes[key] = row.note_text;
-    }
+    notes[`${row.person}|${row.date}`] = row.note_text;
   }
-
-  return { notes, eventNotes };
+  return notes;
 }
 
-/** Upsert a regular inline note; deletes the row when text is empty. */
 export async function upsertNote(date: string, person: string, text: string): Promise<void> {
   if (!text.trim()) {
     const { error } = await supabase
@@ -95,23 +92,4 @@ export async function upsertNote(date: string, person: string, text: string): Pr
       .upsert({ date, person, note_text: text.trim() }, { onConflict: 'date,person' });
     if (error) throw error;
   }
-}
-
-/** Create (or overwrite) multi-day event entries across a date range and set of persons. */
-export async function createEventNotes(
-  dates: string[],
-  persons: string[],
-  text: string,
-): Promise<void> {
-  const rows = dates.flatMap(date =>
-    persons.map(person => ({
-      date,
-      person,
-      note_text: `${EVENT_NOTE_PREFIX}${text}`,
-    }))
-  );
-  const { error } = await supabase
-    .from('weekly_notes')
-    .upsert(rows, { onConflict: 'date,person' });
-  if (error) throw error;
 }

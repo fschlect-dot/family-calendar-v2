@@ -2,6 +2,7 @@ import ICAL from 'ical.js';
 import type { CalEvent, FeedName } from './types';
 
 const FEED_NAMES: FeedName[] = ['fred_custody', 'fred_outlook', 'charissa_custody'];
+
 const DAYS_PAST   = 365;
 const DAYS_FUTURE = 730;
 
