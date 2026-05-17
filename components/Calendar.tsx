@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { CalEvent, Idea, ViewMode } from '@/lib/types';
 import { loadAllFeeds } from '@/lib/feeds';
-import { createIdea, deleteIdea, fetchIdeas, updateIdea } from '@/lib/supabase';
+import { createIdea, deleteIdea, fetchIdeas, updateIdea, fetchAllNotes, upsertNote } from '@/lib/supabase';
 import EventChip from './EventChip';
 import DayDetailModal from './DayDetailModal';
 import IdeaModal from './IdeaModal';
@@ -139,6 +139,7 @@ export default function Calendar() {
   const [enabledFeeds, setEnabledFeeds] = useState<Set<FeedName>>(
     new Set(['fred_custody', 'charissa_custody', 'fred_outlook', 'idea'])
   );
+  const [notes, setNotes] = useState<Record<string, string>>({});
 
   const today     = todayMidnight();
   const allEvents = [...icsEvents, ...ideas.map(ideaToEvent)];
@@ -150,19 +151,37 @@ export default function Calendar() {
     setEnabledFeeds(newEnabled);
   };
 
-  // Load feeds + ideas on mount
+  // Load feeds, ideas, and notes on mount
   useEffect(() => {
     setLoading(true);
-    Promise.allSettled([loadAllFeeds(), fetchIdeas()])
-      .then(([icsResult, ideasResult]) => {
-        const ics      = icsResult.status      === 'fulfilled' ? icsResult.value      : [];
-        const ideaData = ideasResult.status === 'fulfilled' ? ideasResult.value : [];
-        if (icsResult.status === 'rejected')   console.warn('[calendar] ICS load failed:', icsResult.reason);
-        if (ideasResult.status === 'rejected') console.warn('[calendar] Ideas load failed:', ideasResult.reason);
+    Promise.allSettled([loadAllFeeds(), fetchIdeas(), fetchAllNotes()])
+      .then(([icsResult, ideasResult, notesResult]) => {
+        const ics       = icsResult.status   === 'fulfilled' ? icsResult.value   : [];
+        const ideaData  = ideasResult.status === 'fulfilled' ? ideasResult.value : [];
+        const notesData = notesResult.status === 'fulfilled' ? notesResult.value : {};
+        if (icsResult.status   === 'rejected') console.warn('[calendar] ICS load failed:',   icsResult.reason);
+        if (ideasResult.status === 'rejected') console.warn('[calendar] Ideas load failed:',  ideasResult.reason);
+        if (notesResult.status === 'rejected') console.warn('[calendar] Notes load failed:',  notesResult.reason);
         setIcsEvents(ics);
         setIdeas(ideaData);
+        setNotes(notesData);
       })
       .finally(() => setLoading(false));
+  }, []);
+
+  const saveNote = useCallback(async (person: string, date: string, text: string) => {
+    const key = `${person}|${date}`;
+    setNotes(prev => {
+      if (text.trim()) return { ...prev, [key]: text.trim() };
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    try {
+      await upsertNote(date, person, text);
+    } catch (err) {
+      console.warn('[calendar] note save failed:', err);
+    }
   }, []);
 
   const refreshIdeas = useCallback(async () => setIdeas(await fetchIdeas()), []);
@@ -253,8 +272,8 @@ export default function Calendar() {
       {/* ── Calendar body (3-week scrollable) ── */}
       <main className="px-4 py-4">
         {view === 'week'
-          ? <MultiWeekTable current={current} today={today} allEvents={allEvents} enabledFeeds={enabledFeeds} onDayDetail={setDayModal} onAddIdea={d=>setIdeaModal({date:d})} />
-          : <MonthGrid current={current} today={today} allEvents={allEvents} enabledFeeds={enabledFeeds} onDayDetail={setDayModal} onAddIdea={d=>setIdeaModal({date:d})} />
+          ? <MultiWeekTable current={current} today={today} allEvents={allEvents} enabledFeeds={enabledFeeds} notes={notes} onSaveNote={saveNote} onDayDetail={setDayModal} onAddIdea={d=>setIdeaModal({date:d})} />
+          : <MonthGrid      current={current} today={today} allEvents={allEvents} enabledFeeds={enabledFeeds} notes={notes} onSaveNote={saveNote} onDayDetail={setDayModal} onAddIdea={d=>setIdeaModal({date:d})} />
         }
       </main>
 
@@ -303,13 +322,15 @@ interface GridProps {
   today:        Date;
   allEvents:    CalEvent[];
   enabledFeeds: Set<FeedName>;
+  notes:        Record<string, string>;
+  onSaveNote:   (person: string, date: string, text: string) => void;
   onDayDetail:  (d: Date) => void;
   onAddIdea:    (dateStr: string) => void;
 }
 
 // ── 3-Week Scrollable Table ────────────────────────────────────────────────
 
-function MultiWeekTable({ current, today, allEvents, enabledFeeds, onDayDetail, onAddIdea }: GridProps) {
+function MultiWeekTable({ current, today, allEvents, enabledFeeds, notes, onSaveNote, onDayDetail, onAddIdea }: GridProps) {
   // Show previous week + current week + next week (3 weeks total)
   const startWeek = addDays(weekStart(current), -7);
   const weeks = Array.from({length:3}, (_,i) => addDays(startWeek, i*7));
@@ -386,9 +407,17 @@ function MultiWeekTable({ current, today, allEvents, enabledFeeds, onDayDetail, 
                             custodyColor ? '' : CELL_BG_CLS[key]
                           } ${isToday ? 'ring-2 ring-inset ring-red-300 dark:ring-red-700' : ''}`}>
                           <div className="min-h-[32px]">
-                            {!isKid && personEvts.map(e => (
-                              <EventChip key={e.id} event={e} onClick={() => onDayDetail(day)} />
-                            ))}
+                            {isKid
+                              ? <NoteCell
+                                  noteKey={`${key}|${dateStr}`}
+                                  initialValue={notes[`${key}|${dateStr}`] ?? ''}
+                                  hasCustody={!!custodyColor}
+                                  onSave={(text) => onSaveNote(key, dateStr, text)}
+                                />
+                              : personEvts.map(e => (
+                                  <EventChip key={e.id} event={e} onClick={() => onDayDetail(day)} />
+                                ))
+                            }
                             {key === 'ideas' && (
                               <button
                                 onClick={() => onAddIdea(dateStr)}
@@ -412,9 +441,43 @@ function MultiWeekTable({ current, today, allEvents, enabledFeeds, onDayDetail, 
   );
 }
 
+// ── NoteCell — editable note overlaid on custody background ──────────────
+
+interface NoteCellProps {
+  noteKey:      string;
+  initialValue: string;
+  hasCustody:   boolean;
+  onSave:       (text: string) => void;
+}
+
+function NoteCell({ noteKey, initialValue, hasCustody, onSave }: NoteCellProps) {
+  const [text, setText] = useState(initialValue);
+
+  // Sync when notes load asynchronously after mount
+  useEffect(() => { setText(initialValue); }, [initialValue]);
+
+  return (
+    <input
+      key={noteKey}
+      type="text"
+      value={text}
+      onChange={e => setText(e.target.value)}
+      onBlur={() => onSave(text)}
+      onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+      placeholder="Add note…"
+      className={`w-full bg-transparent text-[10px] leading-tight px-0.5 focus:outline-none ${
+        hasCustody
+          ? 'text-white placeholder:text-white/40'
+          : 'text-gray-500 dark:text-gray-400 placeholder:text-gray-300 dark:placeholder:text-gray-600'
+      }`}
+    />
+  );
+}
+
 // ── Month Grid (secondary view) ────────────────────────────────────────────
 
-function MonthGrid({ current, today, allEvents, enabledFeeds, onDayDetail, onAddIdea }: GridProps) {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function MonthGrid({ current, today, allEvents, enabledFeeds, notes: _notes, onSaveNote: _onSaveNote, onDayDetail, onAddIdea }: GridProps) {
   const year  = current.getFullYear();
   const month = current.getMonth();
 

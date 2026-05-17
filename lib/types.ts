@@ -19,3 +19,11 @@ export interface Idea {
 }
 
 export type ViewMode = 'month' | 'week';
+
+export interface WeeklyNote {
+  id: string;
+  date: string;   // YYYY-MM-DD
+  person: string; // henry | george | mabel | everett
+  note_text: string;
+  created_at?: string;
+}
