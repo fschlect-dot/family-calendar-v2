@@ -105,6 +105,7 @@ export default function EventForm({ event, defaultDate, currentUser, onSave, onD
         event_type:  form.event_type,
         people:      form.people,
       });
+      setForm({ ...BLANK });
       onClear();
     } finally {
       setSaving(false);
