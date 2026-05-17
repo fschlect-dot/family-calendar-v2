@@ -10,7 +10,7 @@ export interface CalEvent {
   note?: string;
 }
 
-export type EventType = 'sports' | 'school' | 'trip' | 'work' | 'birthday' | 'other';
+export type EventType = 'sports' | 'school' | 'trip' | 'work' | 'birthday' | 'other' | 'dinner';
 
 export interface FamilyEvent {
   id: string;

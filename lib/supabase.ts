@@ -63,33 +63,3 @@ export async function deleteEvent(id: string): Promise<void> {
   if (error) throw error;
 }
 
-// ── Weekly Notes CRUD ──────────────────────────────────────────────────────
-
-export async function fetchAllNotes(): Promise<Record<string, string>> {
-  const { data, error } = await supabase
-    .from('weekly_notes')
-    .select('date, person, note_text');
-  if (error) throw error;
-
-  const notes: Record<string, string> = {};
-  for (const row of data ?? []) {
-    notes[`${row.person}|${row.date}`] = row.note_text;
-  }
-  return notes;
-}
-
-export async function upsertNote(date: string, person: string, text: string): Promise<void> {
-  if (!text.trim()) {
-    const { error } = await supabase
-      .from('weekly_notes')
-      .delete()
-      .eq('date', date)
-      .eq('person', person);
-    if (error) throw error;
-  } else {
-    const { error } = await supabase
-      .from('weekly_notes')
-      .upsert({ date, person, note_text: text.trim() }, { onConflict: 'date,person' });
-    if (error) throw error;
-  }
-}

@@ -1,9 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CalEvent, FamilyEvent, ViewMode } from '@/lib/types';
+import { useEffect, useRef, useState } from 'react';
+import type { CalEvent, EventType, FamilyEvent, ViewMode } from '@/lib/types';
 import { loadAllFeeds } from '@/lib/feeds';
-import { getEventsByDateRange, saveEvent, deleteEvent, fetchAllNotes, upsertNote } from '@/lib/supabase';
+import { getEventsByDateRange, saveEvent, deleteEvent } from '@/lib/supabase';
 import { eventTypeConfig } from '@/lib/eventTypes';
 import EventChip from './EventChip';
 import EventForm from './EventForm';
@@ -13,18 +13,13 @@ import LoginForm from './LoginForm';
 // ── Date helpers ───────────────────────────────────────────────────────────
 
 function dayOffset(d: Date) { return (d.getDay() + 6) % 7; }
-function addDays(d: Date, n: number): Date {
-  const r = new Date(d); r.setDate(r.getDate() + n); return r;
-}
+function addDays(d: Date, n: number): Date { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
 function weekStart(d: Date): Date {
   const r = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   r.setDate(r.getDate() - dayOffset(r));
   return r;
 }
-function todayMidnight(): Date {
-  const t = new Date();
-  return new Date(t.getFullYear(), t.getMonth(), t.getDate());
-}
+function todayMidnight(): Date { const t = new Date(); return new Date(t.getFullYear(), t.getMonth(), t.getDate()); }
 function isoDate(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
@@ -36,33 +31,24 @@ function eventsForDay(day: Date, events: CalEvent[]): CalEvent[] {
   const e = new Date(s.getTime() + 86_400_000);
   return events.filter(ev => ev.start < e && ev.end > s);
 }
-function familyEventsForPersonDay(personKey: string, dateStr: string, events: FamilyEvent[]): FamilyEvent[] {
-  return events.filter(ev =>
-    ev.people?.includes(personKey) &&
-    ev.start_date <= dateStr &&
-    ev.end_date   >= dateStr
-  );
-}
 function custodyFeedForDay(evts: CalEvent[]): string | null {
   return evts.find(e => e.allDay && (e.feed === 'fred_custody' || e.feed === 'charissa_custody'))?.feed ?? null;
 }
 function isCustodyBg(e: CalEvent) {
   return e.allDay && (e.feed === 'fred_custody' || e.feed === 'charissa_custody');
 }
-function fmt12(t: string) {
+function fmt12(t: string): string {
   const [h, m] = t.split(':').map(Number);
   const ampm = h >= 12 ? 'PM' : 'AM';
   return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${ampm}`;
 }
 
-// ── Custody bg tints (month grid) ─────────────────────────────────────────
+// ── Colors ────────────────────────────────────────────────────────────────
 
 const CUSTODY_BG: Record<string, string> = {
   fred_custody:     'bg-blue-50  dark:bg-blue-950/40',
   charissa_custody: 'bg-green-50 dark:bg-green-950/40',
 };
-
-// ── Kids custody solid fill colors (week table) ────────────────────────────
 
 const KIDS = new Set<PersonKey>(['henry', 'george', 'mabel', 'everett']);
 
@@ -98,7 +84,11 @@ const PERSONS = [
 
 type PersonKey = typeof PERSONS[number]['key'];
 
-const NOTES_ONLY_KEYS = new Set<PersonKey>(['fred', 'charissa', 'dinner', 'all']);
+// People available for filtering (not dinner/all)
+const FILTER_PEOPLE = PERSONS.filter(p => p.key !== 'dinner' && p.key !== 'all');
+
+// All event types for the filter
+const FILTER_TYPES = Object.entries(eventTypeConfig) as [EventType, typeof eventTypeConfig[EventType]][];
 
 const ROW_HEADER_CLS: Record<PersonKey, string> = {
   henry:    'bg-blue-100   text-blue-900   border-blue-200   dark:bg-blue-900/40   dark:text-blue-200   dark:border-blue-800',
@@ -118,11 +108,52 @@ const CELL_BG_CLS: Record<PersonKey, string> = {
   everett:  'bg-rose-50    dark:bg-rose-950/20',
   fred:     'bg-yellow-100 dark:bg-yellow-900/30',
   charissa: 'bg-cyan-100   dark:bg-cyan-900/30',
-  dinner:   'bg-orange-50  dark:bg-orange-950/20',
+  dinner:   'bg-gray-50    dark:bg-gray-900/30',
   all:      'bg-purple-50  dark:bg-purple-950/20',
 };
 
-function eventsForPersonDay(personKey: PersonKey, day: Date, allEvents: CalEvent[], enabledFeeds: Set<FeedName>): CalEvent[] {
+// ── Event filtering per cell ───────────────────────────────────────────────
+
+function familyEventsForCell(
+  personKey: PersonKey,
+  dateStr: string,
+  events: FamilyEvent[],
+  enabledPeople: Set<PersonKey>,
+  enabledTypes: Set<EventType>,
+): FamilyEvent[] {
+  return events.filter(ev => {
+    if (ev.start_date > dateStr || ev.end_date < dateStr) return false;
+
+    // Dinner row: only dinner events, filtered by type toggle
+    if (personKey === 'dinner') {
+      if (enabledTypes.size > 0 && !enabledTypes.has('dinner')) return false;
+      return ev.event_type === 'dinner';
+    }
+
+    // Non-dinner rows: never show dinner events
+    if (ev.event_type === 'dinner') return false;
+
+    // 'all' row: show general (no-people) events
+    if (personKey === 'all') {
+      if (!ev.people || ev.people.length === 0) {
+        if (enabledTypes.size > 0 && !enabledTypes.has(ev.event_type as EventType)) return false;
+        return true;
+      }
+      return false;
+    }
+
+    // Person filter (if active, this person must be enabled)
+    if (enabledPeople.size > 0 && !enabledPeople.has(personKey)) return false;
+
+    // Type filter
+    if (enabledTypes.size > 0 && !enabledTypes.has(ev.event_type as EventType)) return false;
+
+    // Person match
+    return ev.people?.includes(personKey) ?? false;
+  });
+}
+
+function icsEventsForPersonDay(personKey: PersonKey, day: Date, allEvents: CalEvent[], enabledFeeds: Set<FeedName>): CalEvent[] {
   const dayEvts = eventsForDay(day, allEvents).filter(e => enabledFeeds.has(e.feed as FeedName));
   if (personKey === 'henry'  || personKey === 'george')  return dayEvts.filter(e => e.allDay && e.feed === 'fred_custody');
   if (personKey === 'mabel'  || personKey === 'everett') return dayEvts.filter(e => e.allDay && e.feed === 'charissa_custody');
@@ -132,83 +163,83 @@ function eventsForPersonDay(personKey: PersonKey, day: Date, allEvents: CalEvent
 // ── Main component ─────────────────────────────────────────────────────────
 
 export default function Calendar() {
-  const [currentUser,   setCurrentUser]   = useState<string | null>(null);
-  const [view,          setView]          = useState<ViewMode>('week');
-  const [current,       setCurrent]       = useState(new Date());
-  const [icsEvents,     setIcsEvents]     = useState<CalEvent[]>([]);
-  const [familyEvents,  setFamilyEvents]  = useState<FamilyEvent[]>([]);
-  const [loading,       setLoading]       = useState(true);
-  const [dayModal,      setDayModal]      = useState<Date | null>(null);
-  const [editingEvent,  setEditingEvent]  = useState<FamilyEvent | null>(null);
-  const [defaultDate,   setDefaultDate]   = useState<string | undefined>();
-  const [enabledFeeds,  setEnabledFeeds]  = useState<Set<FeedName>>(
+  const [currentUser,  setCurrentUser]  = useState<string | null>(null);
+  const [view,         setView]         = useState<ViewMode>('week');
+  const [current,      setCurrent]      = useState(new Date());
+  const [icsEvents,    setIcsEvents]    = useState<CalEvent[]>([]);
+  const [familyEvents, setFamilyEvents] = useState<FamilyEvent[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [dayModal,     setDayModal]     = useState<Date | null>(null);
+  const [editingEvent, setEditingEvent] = useState<FamilyEvent | null>(null);
+  const [defaultDate,  setDefaultDate]  = useState<string | undefined>();
+
+  // Custody feed toggles
+  const [enabledFeeds, setEnabledFeeds] = useState<Set<FeedName>>(
     new Set(['fred_custody', 'charissa_custody', 'fred_outlook'])
   );
-  const [notes,         setNotes]         = useState<Record<string, string>>({});
-  const [notesOnlyMode, setNotesOnlyMode] = useState(false);
+  // People filter (empty = show all)
+  const [enabledPeople, setEnabledPeople] = useState<Set<PersonKey>>(new Set());
+  // Event type filter (empty = show all)
+  const [enabledTypes, setEnabledTypes] = useState<Set<EventType>>(new Set());
 
   const today = todayMidnight();
 
-  // Restore login from localStorage
+  // ── Auth ─────────────────────────────────────────────────────────────────
+
   useEffect(() => {
-    const stored = typeof window !== 'undefined' ? localStorage.getItem('calUser') : null;
+    const stored = localStorage.getItem('calUser');
     if (stored) setCurrentUser(stored);
   }, []);
 
-  function handleLogin(email: string) {
-    localStorage.setItem('calUser', email);
-    setCurrentUser(email);
-  }
-  function handleLogout() {
-    localStorage.removeItem('calUser');
-    setCurrentUser(null);
-  }
+  // ── Persist filters ───────────────────────────────────────────────────────
 
-  const toggleFeed = (feed: FeedName) => {
-    setEnabledFeeds(prev => {
-      const next = new Set(prev);
-      if (next.has(feed)) next.delete(feed); else next.add(feed);
-      return next;
-    });
-  };
+  useEffect(() => {
+    const stored = localStorage.getItem('calFilters');
+    if (!stored) return;
+    try {
+      const { people, types, feeds } = JSON.parse(stored);
+      if (people) setEnabledPeople(new Set<PersonKey>(people));
+      if (types)  setEnabledTypes(new Set<EventType>(types));
+      if (feeds)  setEnabledFeeds(new Set<FeedName>(feeds));
+    } catch { /* ignore corrupt data */ }
+  }, []);
 
-  // Load ICS + family events + notes
+  useEffect(() => {
+    localStorage.setItem('calFilters', JSON.stringify({
+      people: [...enabledPeople],
+      types:  [...enabledTypes],
+      feeds:  [...enabledFeeds],
+    }));
+  }, [enabledPeople, enabledTypes, enabledFeeds]);
+
+  // ── Data loading ──────────────────────────────────────────────────────────
+
   useEffect(() => {
     if (!currentUser) return;
     setLoading(true);
-    const now = new Date();
+    const now        = new Date();
     const rangeStart = isoDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 365));
     const rangeEnd   = isoDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 730));
-    Promise.allSettled([
-      loadAllFeeds(),
-      getEventsByDateRange(rangeStart, rangeEnd),
-      fetchAllNotes(),
-    ]).then(([icsResult, eventsResult, notesResult]) => {
-      if (icsResult.status    === 'fulfilled') setIcsEvents(icsResult.value);
-      else console.warn('[calendar] ICS failed:', icsResult.reason);
-      if (eventsResult.status === 'fulfilled') setFamilyEvents(eventsResult.value);
-      else console.warn('[calendar] Events failed:', eventsResult.reason);
-      if (notesResult.status  === 'fulfilled') setNotes(notesResult.value);
-      else console.warn('[calendar] Notes failed:', notesResult.reason);
-    }).finally(() => setLoading(false));
+    Promise.allSettled([loadAllFeeds(), getEventsByDateRange(rangeStart, rangeEnd)])
+      .then(([icsResult, eventsResult]) => {
+        if (icsResult.status    === 'fulfilled') setIcsEvents(icsResult.value);
+        else console.warn('[calendar] ICS failed:', icsResult.reason);
+        if (eventsResult.status === 'fulfilled') setFamilyEvents(eventsResult.value);
+        else console.warn('[calendar] Events failed:', eventsResult.reason);
+      })
+      .finally(() => setLoading(false));
   }, [currentUser]);
 
-  const saveNote = useCallback(async (person: string, date: string, text: string) => {
-    const key = `${person}|${date}`;
-    setNotes(prev => {
-      if (text.trim()) return { ...prev, [key]: text.trim() };
-      const next = { ...prev }; delete next[key]; return next;
-    });
-    try { await upsertNote(date, person, text); }
-    catch (err) { console.warn('[calendar] note save failed:', err); }
-  }, []);
+  // ── Event CRUD ────────────────────────────────────────────────────────────
 
-  async function handleSaveEvent(payload: Omit<FamilyEvent, 'id' | 'created_at' | 'updated_at'> & { id?: string }) {
+  async function handleSaveEvent(
+    payload: Omit<FamilyEvent, 'id' | 'created_at' | 'updated_at'> & { id?: string }
+  ) {
     const saved = await saveEvent(payload);
-    setFamilyEvents(prev => {
-      const without = prev.filter(e => e.id !== saved.id);
-      return [...without, saved].sort((a, b) => a.start_date.localeCompare(b.start_date));
-    });
+    setFamilyEvents(prev =>
+      [...prev.filter(e => e.id !== saved.id), saved]
+        .sort((a, b) => a.start_date.localeCompare(b.start_date))
+    );
   }
 
   async function handleDeleteEvent(id: string) {
@@ -216,10 +247,33 @@ export default function Calendar() {
     setFamilyEvents(prev => prev.filter(e => e.id !== id));
   }
 
-  function openNewEvent(dateStr?: string) {
-    setEditingEvent(null);
-    setDefaultDate(dateStr);
+  async function handleQuickSave(title: string, personKey: PersonKey, dateStr: string) {
+    const isDinner = personKey === 'dinner';
+    try {
+      const saved = await saveEvent({
+        user_id:     currentUser,
+        title,
+        start_date:  dateStr,
+        end_date:    dateStr,
+        event_type:  isDinner ? 'dinner' : 'other',
+        people:      isDinner ? [] : [personKey],
+        start_time:  isDinner ? '18:00' : null,
+        end_time:    null,
+        location:    null,
+        description: null,
+      });
+      setFamilyEvents(prev =>
+        [...prev, saved].sort((a, b) => a.start_date.localeCompare(b.start_date))
+      );
+      // Open edit form with the new event
+      setEditingEvent(saved);
+      setDefaultDate(undefined);
+    } catch (err) {
+      console.warn('[calendar] quick-save failed:', err);
+    }
   }
+
+  // ── Navigation ────────────────────────────────────────────────────────────
 
   function goPrev() {
     setCurrent(c => view === 'month'
@@ -232,6 +286,23 @@ export default function Calendar() {
       : addDays(c, 7));
   }
 
+  function toggleFeed(f: FeedName) {
+    setEnabledFeeds(prev => { const n = new Set(prev); n.has(f) ? n.delete(f) : n.add(f); return n; });
+  }
+  function togglePerson(p: PersonKey) {
+    setEnabledPeople(prev => { const n = new Set(prev); n.has(p) ? n.delete(p) : n.add(p); return n; });
+  }
+  function toggleType(t: EventType) {
+    setEnabledTypes(prev => { const n = new Set(prev); n.has(t) ? n.delete(t) : n.add(t); return n; });
+  }
+  function clearFilters() {
+    setEnabledPeople(new Set());
+    setEnabledTypes(new Set());
+    setEnabledFeeds(new Set(['fred_custody', 'charissa_custody', 'fred_outlook']));
+  }
+
+  const hasActiveFilters = enabledPeople.size > 0 || enabledTypes.size > 0;
+
   const periodLabel = view === 'month'
     ? current.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
     : (() => {
@@ -239,30 +310,28 @@ export default function Calendar() {
         return `${ws.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${we.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
       })();
 
-  if (!currentUser) return <LoginForm onLogin={handleLogin} />;
+  if (!currentUser) return <LoginForm onLogin={email => { localStorage.setItem('calUser', email); setCurrentUser(email); }} />;
 
   const sharedProps = {
-    today, icsEvents, familyEvents, enabledFeeds, notes, notesOnlyMode,
-    onSaveNote: saveNote,
-    onDayDetail: setDayModal,
-    onEditEvent: (ev: FamilyEvent) => { setEditingEvent(ev); setDefaultDate(undefined); },
-    onCellClick: (dateStr: string) => openNewEvent(dateStr),
+    today, icsEvents, familyEvents, enabledFeeds, enabledPeople, enabledTypes,
+    onDayDetail:  setDayModal,
+    onEditEvent:  (ev: FamilyEvent) => { setEditingEvent(ev); setDefaultDate(undefined); },
+    onCellClick:  (dateStr: string) => { setEditingEvent(null); setDefaultDate(dateStr); },
+    onQuickSave:  handleQuickSave,
   };
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-950">
 
-      {/* ── Main calendar area ── */}
+      {/* ── Main calendar ── */}
       <div className="flex-1 flex flex-col overflow-hidden">
 
         {/* Sticky header */}
         <header className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 z-40 shadow-sm flex-shrink-0">
 
-          {/* Row 1: title + nav + view toggle + user */}
-          <div className="max-w-full px-4 py-3 flex flex-wrap items-center gap-3 relative">
-            <h1 className="text-lg font-bold text-gray-900 dark:text-gray-100 flex-1 min-w-fit">
-              Schlecton Calendar
-            </h1>
+          {/* Row 1: title + nav + view + user */}
+          <div className="px-4 py-3 flex flex-wrap items-center gap-3 relative">
+            <h1 className="text-lg font-bold text-gray-900 dark:text-gray-100 flex-1 min-w-fit">Schlecton Calendar</h1>
             {loading && (
               <div className="absolute inset-x-0 bottom-0 h-0.5 bg-blue-100 overflow-hidden pointer-events-none">
                 <div className="h-full w-1/3 bg-blue-500 animate-[slide_1s_linear_infinite]" />
@@ -274,64 +343,83 @@ export default function Calendar() {
                 Today
               </button>
               <button onClick={goPrev} aria-label="Previous"
-                className="px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300 transition-colors text-lg leading-none">
-                ‹
-              </button>
-              <span className="text-sm font-semibold text-gray-900 dark:text-gray-100 min-w-[170px] text-center px-1">
-                {periodLabel}
-              </span>
+                className="px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300 transition-colors text-lg leading-none">‹</button>
+              <span className="text-sm font-semibold text-gray-900 dark:text-gray-100 min-w-[170px] text-center px-1">{periodLabel}</span>
               <button onClick={goNext} aria-label="Next"
-                className="px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300 transition-colors text-lg leading-none">
-                ›
-              </button>
+                className="px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300 transition-colors text-lg leading-none">›</button>
             </div>
             <div className="flex bg-gray-100 dark:bg-gray-800 rounded-lg p-0.5 gap-0.5">
               {(['week', 'month'] as ViewMode[]).map(v => (
                 <button key={v} onClick={() => setView(v)}
                   className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                    view === v
-                      ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm'
-                      : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                    view === v ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
                   }`}>
                   {v.charAt(0).toUpperCase() + v.slice(1)}
                 </button>
               ))}
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-400 dark:text-gray-500 hidden sm:block">
-                {currentUser}
-              </span>
-              <button onClick={handleLogout}
+              <span className="text-xs text-gray-400 dark:text-gray-500 hidden sm:block">{currentUser}</span>
+              <button onClick={() => { localStorage.removeItem('calUser'); setCurrentUser(null); }}
                 className="text-xs px-2 py-1 rounded border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
                 Sign out
               </button>
             </div>
           </div>
 
-          {/* Row 2: filter buttons */}
-          <div className="border-t border-gray-100 dark:border-gray-800 px-4 py-2 flex flex-wrap gap-1.5 items-center">
-            <span className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide mr-1">Filters</span>
-            {FEEDS.map(({ name, label, color }) => (
-              <button key={name} onClick={() => toggleFeed(name)}
-                className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-all border ${
-                  enabledFeeds.has(name)
-                    ? 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100'
-                    : 'bg-gray-50 dark:bg-gray-900 border-gray-100 dark:border-gray-800 text-gray-400 dark:text-gray-500 opacity-50'
-                }`}>
-                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${color}`} />
-                {label}
-              </button>
-            ))}
-            <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-0.5" />
-            <button onClick={() => setNotesOnlyMode(m => !m)}
-              className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-all border ${
-                notesOnlyMode
-                  ? 'bg-indigo-50 dark:bg-indigo-900/40 border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300'
-                  : 'bg-gray-50 dark:bg-gray-900 border-gray-100 dark:border-gray-800 text-gray-500 dark:text-gray-400'
-              }`}>
-              <span className="w-2 h-2 rounded-full flex-shrink-0 bg-indigo-400" />
-              Notes only
-            </button>
+          {/* Row 2: filters */}
+          <div className="border-t border-gray-100 dark:border-gray-800 px-4 py-2 space-y-1.5">
+
+            {/* People filter */}
+            <div className="flex flex-wrap gap-1 items-center">
+              <span className="text-[9px] font-bold uppercase tracking-widest text-gray-400 w-14 flex-shrink-0">People</span>
+              {FILTER_PEOPLE.map(p => (
+                <button key={p.key} onClick={() => togglePerson(p.key as PersonKey)}
+                  className={`px-2 py-0.5 rounded-full text-xs font-medium border transition-all ${
+                    enabledPeople.has(p.key as PersonKey)
+                      ? `${ROW_HEADER_CLS[p.key as PersonKey]} border-current`
+                      : 'bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500'
+                  }`}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Event type filter */}
+            <div className="flex flex-wrap gap-1 items-center">
+              <span className="text-[9px] font-bold uppercase tracking-widest text-gray-400 w-14 flex-shrink-0">Types</span>
+              {FILTER_TYPES.map(([type, c]) => (
+                <button key={type} onClick={() => toggleType(type)}
+                  className={`px-2 py-0.5 rounded-full text-xs font-medium border transition-all ${
+                    enabledTypes.has(type) ? 'text-white border-transparent' : 'bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500'
+                  }`}
+                  style={enabledTypes.has(type) ? { backgroundColor: c.color } : {}}>
+                  {c.icon} {c.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Custody feeds + clear */}
+            <div className="flex flex-wrap gap-1 items-center">
+              <span className="text-[9px] font-bold uppercase tracking-widest text-gray-400 w-14 flex-shrink-0">Custody</span>
+              {FEEDS.map(({ name, label, color }) => (
+                <button key={name} onClick={() => toggleFeed(name)}
+                  className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium border transition-all ${
+                    enabledFeeds.has(name)
+                      ? 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300'
+                      : 'bg-gray-50 dark:bg-gray-900 border-gray-100 dark:border-gray-800 text-gray-400 dark:text-gray-500 opacity-50'
+                  }`}>
+                  <span className={`w-2 h-2 rounded-full flex-shrink-0 ${color}`} />
+                  {label}
+                </button>
+              ))}
+              {hasActiveFilters && (
+                <button onClick={clearFilters}
+                  className="ml-2 px-2 py-0.5 rounded-full text-xs font-medium border border-red-200 dark:border-red-800 text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors">
+                  Clear filters
+                </button>
+              )}
+            </div>
           </div>
         </header>
 
@@ -344,7 +432,7 @@ export default function Calendar() {
         </main>
       </div>
 
-      {/* ── Always-visible Event Form panel ── */}
+      {/* ── Event form panel ── */}
       <div className="w-80 flex-shrink-0 h-full">
         <EventForm
           event={editingEvent}
@@ -356,14 +444,12 @@ export default function Calendar() {
         />
       </div>
 
-      {/* ── Day detail modal ── */}
+      {/* ── Day modal ── */}
       {dayModal && (
         <DayDetailModal
           date={dayModal}
           icsEvents={eventsForDay(dayModal, icsEvents).filter(e => enabledFeeds.has(e.feed as FeedName))}
-          familyEvents={familyEvents.filter(ev =>
-            ev.start_date <= isoDate(dayModal) && ev.end_date >= isoDate(dayModal)
-          )}
+          familyEvents={familyEvents.filter(ev => ev.start_date <= isoDate(dayModal) && ev.end_date >= isoDate(dayModal))}
           onClose={() => setDayModal(null)}
           onEditEvent={ev => { setDayModal(null); setEditingEvent(ev); setDefaultDate(undefined); }}
         />
@@ -380,17 +466,17 @@ interface GridProps {
   icsEvents:     CalEvent[];
   familyEvents:  FamilyEvent[];
   enabledFeeds:  Set<FeedName>;
-  notes:         Record<string, string>;
-  notesOnlyMode: boolean;
-  onSaveNote:    (person: string, date: string, text: string) => void;
+  enabledPeople: Set<PersonKey>;
+  enabledTypes:  Set<EventType>;
   onDayDetail:   (d: Date) => void;
   onEditEvent:   (ev: FamilyEvent) => void;
   onCellClick:   (dateStr: string) => void;
+  onQuickSave:   (title: string, personKey: PersonKey, dateStr: string) => void;
 }
 
-// ── Multi-week table with infinite scroll ─────────────────────────────────
+// ── Multi-week table ──────────────────────────────────────────────────────
 
-function MultiWeekTable({ current, today, icsEvents, familyEvents, enabledFeeds, notes, notesOnlyMode, onSaveNote, onDayDetail, onEditEvent, onCellClick }: GridProps) {
+function MultiWeekTable({ current, today, icsEvents, familyEvents, enabledFeeds, enabledPeople, enabledTypes, onDayDetail, onEditEvent, onCellClick, onQuickSave }: GridProps) {
   const [weeksCount, setWeeksCount] = useState(3);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const loadingMore = useRef(false);
@@ -411,11 +497,8 @@ function MultiWeekTable({ current, today, icsEvents, familyEvents, enabledFeeds,
     return () => obs.disconnect();
   }, [weeksCount]);
 
-  const startWeek      = weekStart(current);
-  const weeks          = Array.from({ length: weeksCount }, (_, i) => addDays(startWeek, i * 7));
-  const visiblePersons = notesOnlyMode
-    ? PERSONS.filter(p => NOTES_ONLY_KEYS.has(p.key))
-    : [...PERSONS];
+  const startWeek = weekStart(current);
+  const weeks     = Array.from({ length: weeksCount }, (_, i) => addDays(startWeek, i * 7));
 
   return (
     <div className="space-y-4">
@@ -459,7 +542,7 @@ function MultiWeekTable({ current, today, icsEvents, familyEvents, enabledFeeds,
                   </tr>
                 </thead>
                 <tbody>
-                  {visiblePersons.map(({ key, label }) => (
+                  {PERSONS.map(({ key, label }) => (
                     <tr key={key} className="border-b border-gray-100 dark:border-gray-800 last:border-b-0">
                       <td className={`py-1.5 px-2 font-semibold text-[10px] uppercase tracking-wide border-r ${ROW_HEADER_CLS[key]} whitespace-nowrap`}>
                         {label}
@@ -467,36 +550,29 @@ function MultiWeekTable({ current, today, icsEvents, familyEvents, enabledFeeds,
                       {days.map(day => {
                         const dateStr      = isoDate(day);
                         const isToday      = sameDay(day, today);
-                        const personEvts   = eventsForPersonDay(key, day, icsEvents, enabledFeeds);
-                        const custodyColor = KIDS.has(key) && personEvts.length > 0
-                          ? KIDS_CUSTODY_COLOR[key]
-                          : undefined;
-                        const cellFamilyEvts = familyEventsForPersonDay(key, dateStr, familyEvents);
+                        const custodyEvts  = icsEventsForPersonDay(key, day, icsEvents, enabledFeeds);
+                        const custodyColor = KIDS.has(key) && custodyEvts.length > 0 ? KIDS_CUSTODY_COLOR[key] : undefined;
+                        const cellEvts     = familyEventsForCell(key, dateStr, familyEvents, enabledPeople, enabledTypes);
 
                         return (
                           <td key={dateStr}
                             style={custodyColor ? { backgroundColor: custodyColor } : undefined}
-                            className={`align-top p-0.5 border-r border-gray-100 dark:border-gray-800 last:border-r-0 ${
+                            className={`align-top p-0.5 border-r border-gray-100 dark:border-gray-800 last:border-r-0 cursor-text ${
                               custodyColor ? '' : CELL_BG_CLS[key]
                             } ${isToday ? 'ring-2 ring-inset ring-red-300 dark:ring-red-700' : ''}`}
                             onClick={() => onCellClick(dateStr)}>
                             <div className="min-h-[36px] space-y-0.5">
-                              {/* Family event chips */}
-                              {cellFamilyEvts.map(ev => (
-                                <FamilyEventChip
-                                  key={ev.id}
-                                  event={ev}
-                                  hasCustody={!!custodyColor}
+                              {cellEvts.map(ev => (
+                                <FamilyEventChip key={ev.id} event={ev} hasCustody={!!custodyColor}
                                   onClick={e => { e.stopPropagation(); onEditEvent(ev); }}
                                 />
                               ))}
-                              {/* Inline note — stop click from bubbling to cell */}
                               <div onClick={e => e.stopPropagation()}>
-                                <NoteCell
-                                  noteKey={`${key}|${dateStr}`}
-                                  initialValue={notes[`${key}|${dateStr}`] ?? ''}
+                                <QuickAddCell
+                                  personKey={key}
+                                  dateStr={dateStr}
                                   hasCustody={!!custodyColor}
-                                  onSave={text => onSaveNote(key, dateStr, text)}
+                                  onQuickSave={title => onQuickSave(title, key, dateStr)}
                                 />
                               </div>
                             </div>
@@ -516,7 +592,42 @@ function MultiWeekTable({ current, today, icsEvents, familyEvents, enabledFeeds,
   );
 }
 
-// ── FamilyEventChip — colored chip for DB-backed events ───────────────────
+// ── QuickAddCell ─────────────────────────────────────────────────────────
+
+function QuickAddCell({
+  personKey,
+  dateStr,
+  hasCustody,
+  onQuickSave,
+}: {
+  personKey: PersonKey;
+  dateStr: string;
+  hasCustody: boolean;
+  onQuickSave: (title: string) => void;
+}) {
+  const [text, setText] = useState('');
+  void personKey; void dateStr; // used by parent, passed for context only
+
+  return (
+    <input
+      type="text"
+      value={text}
+      onChange={e => setText(e.target.value)}
+      onKeyDown={e => {
+        if (e.key === 'Enter' && text.trim()) {
+          onQuickSave(text.trim());
+          setText('');
+          e.preventDefault();
+        }
+      }}
+      className={`w-full bg-transparent text-[10px] leading-tight px-0.5 focus:outline-none ${
+        hasCustody ? 'text-white caret-white' : 'text-gray-600 dark:text-gray-400 caret-gray-500'
+      }`}
+    />
+  );
+}
+
+// ── FamilyEventChip ───────────────────────────────────────────────────────
 
 function FamilyEventChip({
   event,
@@ -527,72 +638,31 @@ function FamilyEventChip({
   hasCustody: boolean;
   onClick: (e: React.MouseEvent) => void;
 }) {
-  const cfg = eventTypeConfig[event.event_type];
+  const cfg   = eventTypeConfig[event.event_type];
   const color = event.color_override ?? cfg.color;
-
-  const timeLabel = event.start_time ? ` ${fmt12(event.start_time)}` : '';
-  const label     = `${cfg.icon} ${event.title}${timeLabel}`;
+  const time  = event.start_time ? ` ${fmt12(event.start_time)}` : '';
+  const label = `${cfg.icon} ${event.title}${time}`;
 
   if (hasCustody) {
     return (
-      <button
-        onClick={onClick}
-        title={label}
-        className="w-full text-left text-[10px] font-bold italic text-white/90 truncate px-0.5 leading-tight cursor-pointer hover:text-white transition-colors"
-      >
+      <button onClick={onClick} title={label}
+        className="w-full text-left text-[10px] font-bold italic text-white/90 truncate px-0.5 leading-tight hover:text-white transition-colors">
         {label}
       </button>
     );
   }
   return (
-    <button
-      onClick={onClick}
-      title={label}
-      className="w-full text-left text-[10px] font-semibold truncate px-1 py-0.5 rounded-sm leading-tight cursor-pointer hover:opacity-80 transition-opacity"
-      style={{ backgroundColor: `${color}26`, color, border: `1px solid ${color}40` }}
-    >
+    <button onClick={onClick} title={label}
+      className="w-full text-left text-[10px] font-semibold truncate px-1 py-0.5 rounded-sm leading-tight hover:opacity-80 transition-opacity"
+      style={{ backgroundColor: `${color}26`, color, border: `1px solid ${color}40` }}>
       {label}
     </button>
   );
 }
 
-// ── NoteCell — transparent editable input ─────────────────────────────────
+// ── Month Grid ────────────────────────────────────────────────────────────
 
-function NoteCell({
-  noteKey,
-  initialValue,
-  hasCustody,
-  onSave,
-}: {
-  noteKey: string;
-  initialValue: string;
-  hasCustody: boolean;
-  onSave: (text: string) => void;
-}) {
-  const [text, setText] = useState(initialValue);
-  useEffect(() => { setText(initialValue); }, [initialValue]);
-
-  return (
-    <input
-      key={noteKey}
-      type="text"
-      value={text}
-      onChange={e => setText(e.target.value)}
-      onBlur={() => onSave(text)}
-      onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-      placeholder="Add note…"
-      className={`w-full bg-transparent text-[10px] leading-tight px-0.5 focus:outline-none ${
-        hasCustody
-          ? 'text-white placeholder:text-white/40'
-          : 'text-gray-500 dark:text-gray-400 placeholder:text-gray-300 dark:placeholder:text-gray-600'
-      }`}
-    />
-  );
-}
-
-// ── Month Grid (secondary view) ────────────────────────────────────────────
-
-function MonthGrid({ current, today, icsEvents, familyEvents, enabledFeeds, onDayDetail, onCellClick }: GridProps) {
+function MonthGrid({ current, today, icsEvents, familyEvents, enabledFeeds, enabledPeople, enabledTypes, onDayDetail, onCellClick }: GridProps) {
   const year  = current.getFullYear();
   const month = current.getMonth();
 
@@ -619,13 +689,17 @@ function MonthGrid({ current, today, icsEvents, familyEvents, enabledFeeds, onDa
           const dayEvts  = eventsForDay(day, icsEvents).filter(e => enabledFeeds.has(e.feed as FeedName));
           const custody  = custodyFeedForDay(dayEvts);
           const nonCust  = dayEvts.filter(e => !isCustodyBg(e));
-          const famEvts  = familyEvents.filter(ev => ev.start_date <= dateStr && ev.end_date >= dateStr);
-          const isToday  = sameDay(day, today);
-          const inMonth  = day.getMonth() === month;
+          // All family events on this day (filtered by type but not by person for month view)
+          const famEvts  = familyEvents.filter(ev => {
+            if (ev.start_date > dateStr || ev.end_date < dateStr) return false;
+            if (enabledTypes.size > 0 && !enabledTypes.has(ev.event_type as EventType)) return false;
+            return true;
+          });
+          const isToday = sameDay(day, today);
+          const inMonth = day.getMonth() === month;
 
           return (
-            <div key={dateStr}
-              onClick={() => onCellClick(dateStr)}
+            <div key={dateStr} onClick={() => onCellClick(dateStr)}
               className={`min-h-[90px] p-1 group cursor-pointer ${
                 inMonth ? (custody ? CUSTODY_BG[custody] : 'bg-white dark:bg-gray-900') : 'bg-gray-50 dark:bg-gray-800/50'
               } ${isToday ? 'ring-2 ring-inset ring-red-400' : ''}`}>
@@ -642,13 +716,12 @@ function MonthGrid({ current, today, icsEvents, familyEvents, enabledFeeds, onDa
               <div className="space-y-0.5">
                 {nonCust.slice(0, 2).map(e => <EventChip key={e.id} event={e} />)}
                 {famEvts.slice(0, 2).map(ev => {
-                  const cfg = eventTypeConfig[ev.event_type];
+                  const cfg   = eventTypeConfig[ev.event_type];
                   const color = ev.color_override ?? cfg.color;
                   return (
-                    <div key={ev.id}
-                      className="text-[11px] px-1.5 py-0.5 rounded font-medium truncate leading-tight"
+                    <div key={ev.id} className="text-[11px] px-1.5 py-0.5 rounded font-medium truncate leading-tight"
                       style={{ backgroundColor: `${color}26`, color }}>
-                      {cfg.icon} {ev.title}
+                      {cfg.icon} {ev.title}{ev.start_time ? ` ${fmt12(ev.start_time)}` : ''}
                     </div>
                   );
                 })}
