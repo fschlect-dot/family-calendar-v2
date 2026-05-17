@@ -28,14 +28,10 @@ export async function loadAllFeeds(): Promise<CalEvent[]> {
 async function fetchAndParse(feedName: FeedName): Promise<CalEvent[]> {
   try {
     const res = await fetch(`/api/ics?feed=${encodeURIComponent(feedName)}`);
-    console.log(`[feeds] ${feedName} http=${res.status}`);
     if (res.status === 204 || !res.ok) return [];
     const text = await res.text();
-    console.log(`[feeds] ${feedName} body_len=${text.length} has_vcal=${text.includes('BEGIN:VCALENDAR')}`);
     if (!text || !text.includes('BEGIN:VCALENDAR')) return [];
-    const events = parseICS(text, feedName);
-    console.log(`[feeds] ${feedName} parsed=${events.length} events`);
-    return events;
+    return parseICS(text, feedName);
   } catch (err) {
     console.warn(`[feeds] ${feedName} error:`, err);
     return [];
@@ -91,11 +87,7 @@ function parseICS(text: string, feedName: FeedName): CalEvent[] {
       // Filter custody feeds to overnight indicators only
       if (isCustodyFeed) {
         const pattern = CUSTODY_PATTERNS[feedName]!;
-        if (!pattern.test(title)) {
-          console.log(`[feeds] ${feedName} SKIP: "${title}"`);
-          continue;
-        }
-        console.log(`[feeds] ${feedName} MATCH: "${title}"`);
+        if (!pattern.test(title)) continue;
       }
 
       let isAllDay = detectAllDay(event, vevent);

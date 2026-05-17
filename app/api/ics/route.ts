@@ -15,7 +15,6 @@ export async function GET(request: NextRequest) {
   }
 
   const url = FEEDS[feed];
-  console.log(`[ics] feed=${feed} url_set=${!!url} url_len=${url?.length ?? 0}`);
 
   if (!url?.trim()) {
     return new NextResponse(null, { status: 204 });
@@ -31,8 +30,6 @@ export async function GET(request: NextRequest) {
       next: { revalidate: 300 },
     });
 
-    console.log(`[ics] feed=${feed} upstream_status=${upstream.status}`);
-
     if (!upstream.ok) {
       return new NextResponse(`Upstream error ${upstream.status}`, { status: 502 });
     }
@@ -44,7 +41,6 @@ export async function GET(request: NextRequest) {
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.log(`[ics] feed=${feed} fetch_error=${msg}`);
     return new NextResponse(`Fetch failed: ${msg}`, { status: 502 });
   }
 }
