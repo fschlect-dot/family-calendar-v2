@@ -45,11 +45,22 @@ function ideaToEvent(idea: Idea): CalEvent {
   return { id:idea.id, title:idea.title, start, end:new Date(start.getTime()+86_400_000), allDay:true, feed:'idea', note:idea.note };
 }
 
-// ── Custody bg tints (light + dark) ───────────────────────────────────────
+// ── Custody bg tints (month grid) ─────────────────────────────────────────
 
 const CUSTODY_BG: Record<string, string> = {
   fred_custody:     'bg-blue-50  dark:bg-blue-950/40',
   charissa_custody: 'bg-green-50 dark:bg-green-950/40',
+};
+
+// ── Kids custody solid fill colors (week table) ────────────────────────────
+
+const KIDS = new Set<PersonKey>(['henry', 'george', 'mabel', 'everett']);
+
+const KIDS_CUSTODY_COLOR: Partial<Record<PersonKey, string>> = {
+  henry:   '#3b82f6',
+  george:  '#10b981',
+  mabel:   '#ec4899',
+  everett: '#f43f5e',
 };
 
 // ── Feed config for legend ─────────────────────────────────────────────────
@@ -109,8 +120,8 @@ function eventsForPersonDay(personKey: PersonKey, day: Date, allEvents: CalEvent
     // Mabel & Everett: only show Charissa custody
     return dayEvts.filter(e => e.allDay && e.feed === 'charissa_custody');
   }
-  if (personKey === 'fred')     return dayEvts.filter(e => e.feed === 'fred_outlook' || e.feed === 'fred_custody');
-  if (personKey === 'charissa') return dayEvts.filter(e => e.feed === 'charissa_custody');
+  if (personKey === 'fred')     return dayEvts.filter(e => e.feed === 'fred_outlook');
+  if (personKey === 'charissa') return [];
   if (personKey === 'ideas')    return dayEvts.filter(e => e.feed === 'idea');
   return [];
 }
@@ -363,14 +374,19 @@ function MultiWeekTable({ current, today, allEvents, enabledFeeds, onDayDetail, 
                       const dateStr    = isoDate(day);
                       const isToday    = sameDay(day, today);
                       const personEvts = eventsForPersonDay(key, day, allEvents, enabledFeeds);
+                      const isKid      = KIDS.has(key);
+                      const custodyColor = isKid && personEvts.length > 0
+                        ? KIDS_CUSTODY_COLOR[key]
+                        : undefined;
 
                       return (
                         <td key={dateStr}
-                          className={`align-top p-0.5 border-r border-gray-100 dark:border-gray-800 last:border-r-0 ${CELL_BG_CLS[key]} ${
-                            isToday ? 'ring-2 ring-inset ring-red-300 dark:ring-red-700' : ''
-                          }`}>
-                          <div className="space-y-0.5 min-h-[32px]">
-                            {personEvts.map(e => (
+                          style={custodyColor ? { backgroundColor: custodyColor } : undefined}
+                          className={`align-top p-0.5 border-r border-gray-100 dark:border-gray-800 last:border-r-0 ${
+                            custodyColor ? '' : CELL_BG_CLS[key]
+                          } ${isToday ? 'ring-2 ring-inset ring-red-300 dark:ring-red-700' : ''}`}>
+                          <div className="min-h-[32px]">
+                            {!isKid && personEvts.map(e => (
                               <EventChip key={e.id} event={e} onClick={() => onDayDetail(day)} />
                             ))}
                             {key === 'ideas' && (
