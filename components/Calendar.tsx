@@ -38,9 +38,9 @@ function isCustodyBg(e: CalEvent) {
   return e.allDay && (e.feed === 'fred_custody' || e.feed === 'charissa_custody');
 }
 function fmt12(t: string): string {
-  const [h, m] = t.split(':').map(Number);
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${ampm}`;
+  const [h24, m] = t.split(':').map(Number);
+  const ampm = h24 >= 12 ? 'PM' : 'AM';
+  return `${h24 % 12 || 12}:${String(m).padStart(2, '0')} ${ampm}`;
 }
 
 // ── Colors ────────────────────────────────────────────────────────────────
@@ -84,11 +84,10 @@ const PERSONS = [
 
 type PersonKey = typeof PERSONS[number]['key'];
 
-// People available for filtering (not dinner/all)
+// Filterable people (not dinner/all)
 const FILTER_PEOPLE = PERSONS.filter(p => p.key !== 'dinner' && p.key !== 'all');
-
-// All event types for the filter
-const FILTER_TYPES = Object.entries(eventTypeConfig) as [EventType, typeof eventTypeConfig[EventType]][];
+const ALL_PEOPLE_KEYS = FILTER_PEOPLE.map(p => p.key as PersonKey);
+const ALL_TYPE_KEYS   = Object.keys(eventTypeConfig) as EventType[];
 
 const ROW_HEADER_CLS: Record<PersonKey, string> = {
   henry:    'bg-blue-100   text-blue-900   border-blue-200   dark:bg-blue-900/40   dark:text-blue-200   dark:border-blue-800',
@@ -124,16 +123,12 @@ function familyEventsForCell(
   return events.filter(ev => {
     if (ev.start_date > dateStr || ev.end_date < dateStr) return false;
 
-    // Dinner row: only dinner events, filtered by type toggle
     if (personKey === 'dinner') {
       if (enabledTypes.size > 0 && !enabledTypes.has('dinner')) return false;
       return ev.event_type === 'dinner';
     }
-
-    // Non-dinner rows: never show dinner events
     if (ev.event_type === 'dinner') return false;
 
-    // 'all' row: show general (no-people) events
     if (personKey === 'all') {
       if (!ev.people || ev.people.length === 0) {
         if (enabledTypes.size > 0 && !enabledTypes.has(ev.event_type as EventType)) return false;
@@ -142,13 +137,11 @@ function familyEventsForCell(
       return false;
     }
 
-    // Person filter (if active, this person must be enabled)
+    // Person filter: if active (non-empty) this person must be enabled
     if (enabledPeople.size > 0 && !enabledPeople.has(personKey)) return false;
-
-    // Type filter
+    // Type filter: if active this type must be enabled
     if (enabledTypes.size > 0 && !enabledTypes.has(ev.event_type as EventType)) return false;
 
-    // Person match
     return ev.people?.includes(personKey) ?? false;
   });
 }
@@ -173,35 +166,31 @@ export default function Calendar() {
   const [editingEvent, setEditingEvent] = useState<FamilyEvent | null>(null);
   const [defaultDate,  setDefaultDate]  = useState<string | undefined>();
 
-  // Custody feed toggles
-  const [enabledFeeds, setEnabledFeeds] = useState<Set<FeedName>>(
-    new Set(['fred_custody', 'charissa_custody', 'fred_outlook'])
-  );
-  // People filter (empty = show all)
+  const [enabledFeeds,  setEnabledFeeds]  = useState<Set<FeedName>>(new Set(['fred_custody', 'charissa_custody', 'fred_outlook']));
+  // empty = show all (same semantics as before, but "All" button makes it explicit)
   const [enabledPeople, setEnabledPeople] = useState<Set<PersonKey>>(new Set());
-  // Event type filter (empty = show all)
-  const [enabledTypes, setEnabledTypes] = useState<Set<EventType>>(new Set());
+  const [enabledTypes,  setEnabledTypes]  = useState<Set<EventType>>(new Set());
 
   const today = todayMidnight();
 
-  // ── Auth ─────────────────────────────────────────────────────────────────
+  // ── Auth ───────────────────────────────────────────────────────────────
 
   useEffect(() => {
     const stored = localStorage.getItem('calUser');
     if (stored) setCurrentUser(stored);
   }, []);
 
-  // ── Persist filters ───────────────────────────────────────────────────────
+  // ── Persist filters ────────────────────────────────────────────────────
 
   useEffect(() => {
     const stored = localStorage.getItem('calFilters');
     if (!stored) return;
     try {
       const { people, types, feeds } = JSON.parse(stored);
-      if (people) setEnabledPeople(new Set<PersonKey>(people));
-      if (types)  setEnabledTypes(new Set<EventType>(types));
-      if (feeds)  setEnabledFeeds(new Set<FeedName>(feeds));
-    } catch { /* ignore corrupt data */ }
+      if (Array.isArray(people)) setEnabledPeople(new Set<PersonKey>(people));
+      if (Array.isArray(types))  setEnabledTypes(new Set<EventType>(types));
+      if (Array.isArray(feeds))  setEnabledFeeds(new Set<FeedName>(feeds));
+    } catch { /* ignore */ }
   }, []);
 
   useEffect(() => {
@@ -212,7 +201,7 @@ export default function Calendar() {
     }));
   }, [enabledPeople, enabledTypes, enabledFeeds]);
 
-  // ── Data loading ──────────────────────────────────────────────────────────
+  // ── Data loading ───────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!currentUser) return;
@@ -230,11 +219,9 @@ export default function Calendar() {
       .finally(() => setLoading(false));
   }, [currentUser]);
 
-  // ── Event CRUD ────────────────────────────────────────────────────────────
+  // ── Event CRUD ─────────────────────────────────────────────────────────
 
-  async function handleSaveEvent(
-    payload: Omit<FamilyEvent, 'id' | 'created_at' | 'updated_at'> & { id?: string }
-  ) {
+  async function handleSaveEvent(payload: Omit<FamilyEvent, 'id' | 'created_at' | 'updated_at'> & { id?: string }) {
     const saved = await saveEvent(payload);
     setFamilyEvents(prev =>
       [...prev.filter(e => e.id !== saved.id), saved]
@@ -251,21 +238,16 @@ export default function Calendar() {
     const isDinner = personKey === 'dinner';
     try {
       const saved = await saveEvent({
-        user_id:     currentUser,
-        title,
-        start_date:  dateStr,
-        end_date:    dateStr,
-        event_type:  isDinner ? 'dinner' : 'other',
-        people:      isDinner ? [] : [personKey],
-        start_time:  isDinner ? '18:00' : null,
-        end_time:    null,
-        location:    null,
-        description: null,
+        user_id: currentUser, title,
+        start_date: dateStr, end_date: dateStr,
+        event_type: isDinner ? 'dinner' : 'other',
+        people:     isDinner ? [] : [personKey],
+        start_time: isDinner ? '18:00' : null,
+        end_time: null, location: null, description: null,
       });
       setFamilyEvents(prev =>
         [...prev, saved].sort((a, b) => a.start_date.localeCompare(b.start_date))
       );
-      // Open edit form with the new event
       setEditingEvent(saved);
       setDefaultDate(undefined);
     } catch (err) {
@@ -273,35 +255,46 @@ export default function Calendar() {
     }
   }
 
-  // ── Navigation ────────────────────────────────────────────────────────────
+  // ── Navigation ─────────────────────────────────────────────────────────
 
   function goPrev() {
-    setCurrent(c => view === 'month'
-      ? new Date(c.getFullYear(), c.getMonth() - 1, 1)
-      : addDays(c, -7));
+    setCurrent(c => view === 'month' ? new Date(c.getFullYear(), c.getMonth() - 1, 1) : addDays(c, -7));
   }
   function goNext() {
-    setCurrent(c => view === 'month'
-      ? new Date(c.getFullYear(), c.getMonth() + 1, 1)
-      : addDays(c, 7));
+    setCurrent(c => view === 'month' ? new Date(c.getFullYear(), c.getMonth() + 1, 1) : addDays(c, 7));
   }
+
+  // ── Filter toggles ─────────────────────────────────────────────────────
 
   function toggleFeed(f: FeedName) {
     setEnabledFeeds(prev => { const n = new Set(prev); n.has(f) ? n.delete(f) : n.add(f); return n; });
   }
   function togglePerson(p: PersonKey) {
-    setEnabledPeople(prev => { const n = new Set(prev); n.has(p) ? n.delete(p) : n.add(p); return n; });
+    setEnabledPeople(prev => {
+      // In "all" mode (empty): clicking a person switches to single-person filter mode
+      if (prev.size === 0) return new Set([p]);
+      const n = new Set(prev);
+      n.has(p) ? n.delete(p) : n.add(p);
+      return n;
+    });
   }
   function toggleType(t: EventType) {
-    setEnabledTypes(prev => { const n = new Set(prev); n.has(t) ? n.delete(t) : n.add(t); return n; });
+    setEnabledTypes(prev => {
+      if (prev.size === 0) return new Set([t]);
+      const n = new Set(prev);
+      n.has(t) ? n.delete(t) : n.add(t);
+      return n;
+    });
   }
   function clearFilters() {
-    setEnabledPeople(new Set());
+    setEnabledPeople(new Set()); // empty = show all
     setEnabledTypes(new Set());
     setEnabledFeeds(new Set(['fred_custody', 'charissa_custody', 'fred_outlook']));
   }
 
-  const hasActiveFilters = enabledPeople.size > 0 || enabledTypes.size > 0;
+  const allPeopleMode = enabledPeople.size === 0;
+  const allTypesMode  = enabledTypes.size  === 0;
+  const hasActiveFilters = !allPeopleMode || !allTypesMode;
 
   const periodLabel = view === 'month'
     ? current.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
@@ -319,6 +312,13 @@ export default function Calendar() {
     onCellClick:  (dateStr: string) => { setEditingEvent(null); setDefaultDate(dateStr); },
     onQuickSave:  handleQuickSave,
   };
+
+  // Shared pill button styles
+  const pillActive   = (color: string) => ({ backgroundColor: color });
+  const pillActiveCls = 'text-white border-transparent';
+  const pillInactiveCls = 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600';
+  const allBtnActiveCls = 'bg-gray-700 dark:bg-gray-300 text-white dark:text-gray-900 border-gray-700 dark:border-gray-300';
+  const allBtnInactiveCls = 'bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700';
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-950">
@@ -370,36 +370,45 @@ export default function Calendar() {
           {/* Row 2: filters */}
           <div className="border-t border-gray-100 dark:border-gray-800 px-4 py-2 space-y-1.5">
 
-            {/* People filter */}
+            {/* People */}
             <div className="flex flex-wrap gap-1 items-center">
               <span className="text-[9px] font-bold uppercase tracking-widest text-gray-400 w-14 flex-shrink-0">People</span>
-              {FILTER_PEOPLE.map(p => (
-                <button key={p.key} onClick={() => togglePerson(p.key as PersonKey)}
-                  className={`px-2 py-0.5 rounded-full text-xs font-medium border transition-all ${
-                    enabledPeople.has(p.key as PersonKey)
-                      ? `${ROW_HEADER_CLS[p.key as PersonKey]} border-current`
-                      : 'bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500'
-                  }`}>
-                  {p.label}
-                </button>
-              ))}
+              <button onClick={() => setEnabledPeople(new Set())}
+                className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border transition-all ${allPeopleMode ? allBtnActiveCls : allBtnInactiveCls}`}>
+                All
+              </button>
+              {FILTER_PEOPLE.map(p => {
+                const active = allPeopleMode || enabledPeople.has(p.key as PersonKey);
+                return (
+                  <button key={p.key} onClick={() => togglePerson(p.key as PersonKey)}
+                    className={`px-2.5 py-0.5 rounded-full text-xs font-medium border transition-all ${active ? pillActiveCls : 'border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500 bg-white dark:bg-gray-800 opacity-50'}`}
+                    style={active ? pillActive(ROW_COLOR[p.key as PersonKey]) : {}}>
+                    {p.label}
+                  </button>
+                );
+              })}
             </div>
 
-            {/* Event type filter */}
+            {/* Event types */}
             <div className="flex flex-wrap gap-1 items-center">
               <span className="text-[9px] font-bold uppercase tracking-widest text-gray-400 w-14 flex-shrink-0">Types</span>
-              {FILTER_TYPES.map(([type, c]) => (
-                <button key={type} onClick={() => toggleType(type)}
-                  className={`px-2 py-0.5 rounded-full text-xs font-medium border transition-all ${
-                    enabledTypes.has(type) ? 'text-white border-transparent' : 'bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500'
-                  }`}
-                  style={enabledTypes.has(type) ? { backgroundColor: c.color } : {}}>
-                  {c.icon} {c.label}
-                </button>
-              ))}
+              <button onClick={() => setEnabledTypes(new Set())}
+                className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border transition-all ${allTypesMode ? allBtnActiveCls : allBtnInactiveCls}`}>
+                All
+              </button>
+              {(Object.entries(eventTypeConfig) as [EventType, typeof eventTypeConfig[EventType]][]).map(([type, c]) => {
+                const active = allTypesMode || enabledTypes.has(type);
+                return (
+                  <button key={type} onClick={() => toggleType(type)}
+                    className={`px-2.5 py-0.5 rounded-full text-xs font-medium border transition-all ${active ? pillActiveCls : 'border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500 bg-white dark:bg-gray-800 opacity-50'}`}
+                    style={active ? { backgroundColor: c.color, borderColor: c.color } : {}}>
+                    {c.icon} {c.label}
+                  </button>
+                );
+              })}
             </div>
 
-            {/* Custody feeds + clear */}
+            {/* Custody + clear */}
             <div className="flex flex-wrap gap-1 items-center">
               <span className="text-[9px] font-bold uppercase tracking-widest text-gray-400 w-14 flex-shrink-0">Custody</span>
               {FEEDS.map(({ name, label, color }) => (
@@ -415,8 +424,8 @@ export default function Calendar() {
               ))}
               {hasActiveFilters && (
                 <button onClick={clearFilters}
-                  className="ml-2 px-2 py-0.5 rounded-full text-xs font-medium border border-red-200 dark:border-red-800 text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors">
-                  Clear filters
+                  className="ml-1 px-2.5 py-0.5 rounded-full text-xs font-medium border border-red-200 dark:border-red-800 text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors">
+                  Reset filters
                 </button>
               )}
             </div>
@@ -457,6 +466,19 @@ export default function Calendar() {
     </div>
   );
 }
+
+// ── Person → filter pill color ─────────────────────────────────────────────
+
+const ROW_COLOR: Record<PersonKey, string> = {
+  henry:    '#3b82f6',
+  george:   '#10b981',
+  mabel:    '#ec4899',
+  everett:  '#f43f5e',
+  fred:     '#ca8a04',
+  charissa: '#0891b2',
+  dinner:   '#ea580c',
+  all:      '#9333ea',
+};
 
 // ── Grid props ─────────────────────────────────────────────────────────────
 
@@ -503,35 +525,40 @@ function MultiWeekTable({ current, today, icsEvents, familyEvents, enabledFeeds,
   return (
     <div className="space-y-4">
       {weeks.map(ws => {
-        const days      = Array.from({ length: 7 }, (_, i) => addDays(ws, i));
-        const weekLabel = `${ws.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${addDays(ws, 6).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+        const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i));
+        const weekLabel = `${ws.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${addDays(ws, 6).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
 
         return (
-          <div key={isoDate(ws)} className="rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm bg-white dark:bg-gray-900">
-            <div className="px-4 py-1.5 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-              <h3 className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">{weekLabel}</h3>
+          <div key={isoDate(ws)} className="rounded-xl overflow-hidden shadow-sm border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+
+            {/* Week label — dark header */}
+            <div className="px-4 py-2.5 bg-gray-700 dark:bg-gray-800">
+              <h3 className="text-sm font-bold text-white tracking-wide">{weekLabel}</h3>
             </div>
+
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-sm table-fixed" style={{ minWidth: '560px' }}>
                 <colgroup>
                   <col style={{ width: '72px' }} />
                   {days.map((_, i) => <col key={i} />)}
                 </colgroup>
+
+                {/* Day column headers */}
                 <thead>
-                  <tr className="border-b border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800">
-                    <th className="py-1.5 px-2 border-r border-gray-200 dark:border-gray-700" />
+                  <tr className="border-b-2 border-gray-300 dark:border-gray-600 bg-gray-100 dark:bg-gray-800">
+                    <th className="py-2 px-2 border-r-2 border-gray-300 dark:border-gray-600" />
                     {days.map(day => {
                       const isToday = sameDay(day, today);
                       return (
                         <th key={isoDate(day)}
-                          className={`py-1.5 px-1 text-center border-r border-gray-100 dark:border-gray-700 last:border-r-0 font-normal ${isToday ? 'bg-red-50 dark:bg-red-950/30' : ''}`}>
+                          className={`py-2 px-1 text-center border-r border-gray-200 dark:border-gray-600 last:border-r-0 font-normal ${isToday ? 'bg-red-50 dark:bg-red-950/40' : ''}`}>
                           <div className="flex flex-col items-center gap-0.5">
-                            <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                               {day.toLocaleDateString('en-US', { weekday: 'short' })}
                             </span>
                             <button onClick={() => onDayDetail(day)}
-                              className={`w-6 h-6 flex items-center justify-center rounded-full text-xs font-medium transition-colors ${
-                                isToday ? 'bg-red-500 text-white' : 'text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                              className={`w-7 h-7 flex items-center justify-center rounded-full text-sm font-semibold transition-colors ${
+                                isToday ? 'bg-red-500 text-white' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700'
                               }`}>
                               {day.getDate()}
                             </button>
@@ -541,10 +568,12 @@ function MultiWeekTable({ current, today, icsEvents, familyEvents, enabledFeeds,
                     })}
                   </tr>
                 </thead>
+
+                {/* Person rows */}
                 <tbody>
                   {PERSONS.map(({ key, label }) => (
-                    <tr key={key} className="border-b border-gray-100 dark:border-gray-800 last:border-b-0">
-                      <td className={`py-1.5 px-2 font-semibold text-[10px] uppercase tracking-wide border-r ${ROW_HEADER_CLS[key]} whitespace-nowrap`}>
+                    <tr key={key} className="border-b border-gray-200 dark:border-gray-700 last:border-b-0">
+                      <td className={`py-1.5 px-2 font-semibold text-[10px] uppercase tracking-wide border-r-2 border-gray-300 dark:border-gray-600 ${ROW_HEADER_CLS[key]} whitespace-nowrap`}>
                         {label}
                       </td>
                       {days.map(day => {
@@ -557,7 +586,7 @@ function MultiWeekTable({ current, today, icsEvents, familyEvents, enabledFeeds,
                         return (
                           <td key={dateStr}
                             style={custodyColor ? { backgroundColor: custodyColor } : undefined}
-                            className={`align-top p-0.5 border-r border-gray-100 dark:border-gray-800 last:border-r-0 cursor-text ${
+                            className={`align-top p-0.5 border-r border-gray-200 dark:border-gray-700 last:border-r-0 cursor-text relative focus-within:ring-2 focus-within:ring-blue-400 focus-within:ring-inset focus-within:z-10 ${
                               custodyColor ? '' : CELL_BG_CLS[key]
                             } ${isToday ? 'ring-2 ring-inset ring-red-300 dark:ring-red-700' : ''}`}
                             onClick={() => onCellClick(dateStr)}>
@@ -594,20 +623,13 @@ function MultiWeekTable({ current, today, icsEvents, familyEvents, enabledFeeds,
 
 // ── QuickAddCell ─────────────────────────────────────────────────────────
 
-function QuickAddCell({
-  personKey,
-  dateStr,
-  hasCustody,
-  onQuickSave,
-}: {
+function QuickAddCell({ hasCustody, onQuickSave }: {
   personKey: PersonKey;
-  dateStr: string;
+  dateStr:   string;
   hasCustody: boolean;
   onQuickSave: (title: string) => void;
 }) {
   const [text, setText] = useState('');
-  void personKey; void dateStr; // used by parent, passed for context only
-
   return (
     <input
       type="text"
@@ -629,11 +651,7 @@ function QuickAddCell({
 
 // ── FamilyEventChip ───────────────────────────────────────────────────────
 
-function FamilyEventChip({
-  event,
-  hasCustody,
-  onClick,
-}: {
+function FamilyEventChip({ event, hasCustody, onClick }: {
   event: FamilyEvent;
   hasCustody: boolean;
   onClick: (e: React.MouseEvent) => void;
@@ -662,7 +680,7 @@ function FamilyEventChip({
 
 // ── Month Grid ────────────────────────────────────────────────────────────
 
-function MonthGrid({ current, today, icsEvents, familyEvents, enabledFeeds, enabledPeople, enabledTypes, onDayDetail, onCellClick }: GridProps) {
+function MonthGrid({ current, today, icsEvents, familyEvents, enabledFeeds, enabledTypes, onDayDetail, onCellClick }: GridProps) {
   const year  = current.getFullYear();
   const month = current.getMonth();
 
@@ -678,9 +696,9 @@ function MonthGrid({ current, today, icsEvents, familyEvents, enabledFeeds, enab
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden shadow-sm">
-      <div className="grid grid-cols-7 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+      <div className="grid grid-cols-7 bg-gray-700 dark:bg-gray-800">
         {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(d => (
-          <div key={d} className="py-2 text-center text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 border-r border-gray-200 dark:border-gray-700 last:border-r-0">{d}</div>
+          <div key={d} className="py-2 text-center text-xs font-bold uppercase tracking-wider text-white dark:text-gray-300 border-r border-gray-600 dark:border-gray-700 last:border-r-0">{d}</div>
         ))}
       </div>
       <div className="grid grid-cols-7 border-t border-gray-200 dark:border-gray-700 bg-gray-200 dark:bg-gray-700 gap-px">
@@ -689,7 +707,6 @@ function MonthGrid({ current, today, icsEvents, familyEvents, enabledFeeds, enab
           const dayEvts  = eventsForDay(day, icsEvents).filter(e => enabledFeeds.has(e.feed as FeedName));
           const custody  = custodyFeedForDay(dayEvts);
           const nonCust  = dayEvts.filter(e => !isCustodyBg(e));
-          // All family events on this day (filtered by type but not by person for month view)
           const famEvts  = familyEvents.filter(ev => {
             if (ev.start_date > dateStr || ev.end_date < dateStr) return false;
             if (enabledTypes.size > 0 && !enabledTypes.has(ev.event_type as EventType)) return false;
