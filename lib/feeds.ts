@@ -7,8 +7,8 @@ const DAYS_PAST   = 365;
 const DAYS_FUTURE = 730;
 
 const CUSTODY_PATTERNS: Partial<Record<FeedName, RegExp>> = {
-  fred_custody:     /FWS/i,
-  charissa_custody: /Option A|Regular Schedule/i,
+  fred_custody:     /\bDad\b/i,
+  charissa_custody: /\bMom\b|Option A/i,
 };
 
 // ── Public ─────────────────────────────────────────────────────────────────
